@@ -1,0 +1,48 @@
+# =============================================================================
+#  LiteLLM gateway config
+# -----------------------------------------------------------------------------
+#  This file is the *Phase 2 seam*. The agent doesn't know vLLM exists —
+#  it asks for `qwen-chat` and LiteLLM decides where that goes. When Phase 2
+#  adds Triton, all that changes is:
+#
+#    1. Another `model_list` entry pointing at the new backend.
+#    2. (Optionally) a router rule to balance/fail-over between them.
+#
+#  The app code is untouched. That's the whole point of having a gateway.
+# =============================================================================
+
+model_list:
+  # ---------------------------------------------------------------------------
+  #  qwen-chat → vLLM-served Qwen2.5-3B-Instruct-AWQ
+  # ---------------------------------------------------------------------------
+  - model_name: qwen-chat                     # what callers ask for
+    litellm_params:
+      # The "openai/" prefix tells LiteLLM to use the plain OpenAI-compatible
+      # HTTP path. vLLM speaks this dialect natively, so no adapter is needed.
+      model: openai/qwen-chat
+      api_base: http://vllm-engine:8000/v1    # *** the Phase 2 swap point ***
+      api_key: dummy                          # vLLM has no auth in our setup;
+                                              # LiteLLM still requires *something*
+
+litellm_settings:
+  # Surface a Prometheus-format /metrics endpoint at :4000/metrics.
+  # This is what makes per-tenant request rate / latency observable.
+  callbacks: ["prometheus"]
+
+  # Pass through client-supplied headers (notably X-User-Id) to the backend.
+  # The agent app sets X-User-Id per Streamlit session; without this flag the
+  # gateway would strip it, and the multi-tenancy lesson would be invisible
+  # downstream.
+  forward_client_headers_to_llm_api: true
+
+  # Keep request bodies in the access log. Useful while learning; in real
+  # life you'd redact or sample, because prompts can be huge or sensitive.
+  set_verbose: false
+
+general_settings:
+  # Master key for the gateway. Real value comes from .env via the compose
+  # environment block — this file is just config, not secrets.
+  master_key: os.environ/LITELLM_MASTER_KEY
+
+  # Telemetry to LiteLLM Inc. — off for a learning sandbox.
+  telemetry: false

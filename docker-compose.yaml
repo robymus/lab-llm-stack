@@ -1,0 +1,283 @@
+# =============================================================================
+#  LLM SRE Sandbox — Phase 1.0 compose file
+# -----------------------------------------------------------------------------
+#  Reading order:
+#    1. Top-level keys (name, networks, volumes) — the substrate everything
+#       else hangs off.
+#    2. Services, in dependency order: vllm-engine → litellm → langfuse-db →
+#       langfuse. Each block opens with a one-line summary, then settings, and
+#       every non-obvious flag has an inline comment explaining *why* it's set.
+#
+#  Conventions:
+#    - All services join one user-defined bridge network (`llm-stack`) so
+#      service names act as DNS — no `localhost`, no published-port plumbing
+#      between containers.
+#    - Healthchecks are explicit on every long-lived service; `depends_on`
+#      uses `condition: service_healthy` so dependent services don't race
+#      against startup.
+#    - Image tags are pinned to specific versions. Phase 1.4 re-verifies them;
+#      if you bump one, regenerate the smoke tests in the relevant README.
+#    - Secrets come from `.env` (loaded automatically by compose). Do not
+#      inline secrets here.
+#
+#  The compose `version:` key is deliberately omitted — it's a no-op since
+#  Compose v2 and the spec recommends dropping it.
+# =============================================================================
+
+name: llm-stack   # explicit project name; otherwise compose derives it from
+                  # the directory name, which changes if anyone clones into a
+                  # differently-named folder.
+
+# ---------------------------------------------------------------------------
+#  Networks
+# ---------------------------------------------------------------------------
+#  Single bridge network. Container DNS resolves service names to internal
+#  IPs (e.g. the app reaches the gateway as http://litellm:4000), which is
+#  what makes Phase 2's backend-swap trivial — only the gateway config moves.
+networks:
+  llm-stack:
+    driver: bridge
+
+# ---------------------------------------------------------------------------
+#  Named volumes
+# ---------------------------------------------------------------------------
+#  Anything that holds state we want to survive `docker compose down` lives
+#  here. We deliberately avoid bind-mounting into the repo for state dirs —
+#  it creates permission headaches and pollutes git status.
+volumes:
+  hf-cache:           # HuggingFace model cache shared across vLLM restarts;
+                      # downloading Qwen2.5-3B-AWQ takes ~2 GB / a few minutes.
+  langfuse-pg-data:   # Langfuse's Postgres data dir.
+  prometheus-data:    # Prometheus TSDB (added in Phase 1.1; declared now so
+                      # the file stays stable as we expand).
+  grafana-data:       # Grafana sqlite + plugin cache (Phase 1.1).
+
+# ---------------------------------------------------------------------------
+#  Services
+# ---------------------------------------------------------------------------
+services:
+
+  # =========================================================================
+  #  vLLM inference engine
+  # -------------------------------------------------------------------------
+  #  Serves the model over an OpenAI-compatible API on :8000 and exposes
+  #  Prometheus metrics on the same port at /metrics (no separate exporter
+  #  needed). This is the only service that requires the NVIDIA Container
+  #  Toolkit on the host.
+  # =========================================================================
+  vllm-engine:
+    # v0.6.6 is the first release where the AWQ-Marlin kernel for Ada
+    # (compute capability 8.9) is stable. Bumping requires re-checking that
+    # `--quantization awq_marlin` still works on the 4060 — change carefully.
+    image: vllm/vllm-openai:v0.6.6
+    container_name: vllm-engine
+    restart: unless-stopped
+
+    # Each flag below maps to a learning point — see vllm/README.md for the
+    # long-form explanation. Order matches the README for easy cross-reference.
+    command:
+      - --model
+      - Qwen/Qwen2.5-3B-Instruct-AWQ          # ~2.2 GB AWQ-INT4 weights; fits 8 GB with KV-cache headroom
+      - --quantization
+      - awq_marlin                            # fast AWQ kernel for Ada; falls back to `awq` if Marlin breaks
+      - --max-model-len
+      - "4096"                                # caps KV cache; raise only if you've measured headroom
+      - --gpu-memory-utilization
+      - "0.85"                                # leave ~15% slack for the runtime allocator's quirks
+      - --enable-prefix-caching               # makes prefix-cache-hit metrics non-zero — observable lesson
+      - --served-model-name
+      - qwen-chat                             # stable alias the gateway routes to; weight name can change
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+
+    # Real env (not config flags) — only the HF token, which gates model
+    # download. Public models like Qwen2.5 don't need it; gated models do.
+    environment:
+      HF_TOKEN: ${HF_TOKEN}
+      HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN}    # different libraries read different names; set both
+      # vLLM emits Prometheus metrics by default; explicit for clarity.
+      VLLM_LOGGING_LEVEL: INFO
+
+    ports:
+      - "8000:8000"                          # exposed on the host so `curl :8000/metrics` works from your shell
+
+    volumes:
+      # Persist downloaded weights so a `down` + `up` doesn't re-download
+      # the model. Mounted at root-cache because the image runs as root.
+      - hf-cache:/root/.cache/huggingface
+
+    networks:
+      - llm-stack
+
+    # GPU access. Requires `nvidia-container-toolkit` on the host AND the
+    # nvidia runtime registered with Docker (`docker info | grep nvidia`).
+    # Without these two, this block silently does nothing and the container
+    # starts CPU-only — which then fails as soon as vLLM tries to allocate
+    # CUDA memory. See scripts/preflight.sh.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+    # Loading the model takes ~30-90s on first run. The `start_period` keeps
+    # the container marked as "starting" (not "unhealthy") during that
+    # window, so dependent services wait properly instead of failing fast.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+
+    # Shared-memory size: vLLM's worker processes communicate via shm and
+    # the default 64M is too small for any non-toy model.
+    shm_size: "2gb"
+
+  # =========================================================================
+  #  LiteLLM gateway
+  # -------------------------------------------------------------------------
+  #  The orchestration seam. One YAML file decides which backend handles
+  #  which logical model name — swapping vLLM for Triton in Phase 2 is a
+  #  one-line change here.
+  # =========================================================================
+  litellm:
+    # `main-stable` tracks the latest stable cut of the main branch. Phase
+    # 1.4 will replace this with a specific version once we've verified.
+    image: ghcr.io/berriai/litellm:main-stable
+    container_name: litellm
+    restart: unless-stopped
+
+    # The CLI flag points at the config file we mount below. `--detailed_debug`
+    # is helpful while learning; turn it off once dashboards work.
+    command:
+      - --config
+      - /app/config.yaml
+      - --port
+      - "4000"
+      - --host
+      - 0.0.0.0
+      - --num_workers
+      - "1"                                  # single worker keeps logs readable; raise for load tests
+
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+      LITELLM_LOG: INFO
+
+    ports:
+      - "4000:4000"                          # gateway API + /metrics on the same port
+
+    volumes:
+      # Bind-mount the config so edits take effect after `docker compose restart litellm`
+      # without a rebuild. Read-only so the container can't write back.
+      - ./litellm/config.yaml:/app/config.yaml:ro
+
+    networks:
+      - llm-stack
+
+    depends_on:
+      vllm-engine:
+        condition: service_healthy           # don't start until vLLM can answer requests
+
+    # LiteLLM's slim image has neither `wget` nor `curl`, but it always has
+    # Python (it's a Python app). urllib is in the stdlib, so no extras to
+    # install. We hit `/health/liveliness` because it's the lightest of the
+    # several health endpoints — just confirms the process is alive,
+    # without probing backends (which would couple this healthcheck to
+    # vllm-engine's state).
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:4000/health/liveliness',timeout=3).status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # =========================================================================
+  #  Langfuse Postgres
+  # -------------------------------------------------------------------------
+  #  Storage backend for Langfuse v2. Internal-only — no host port. We pin
+  #  to Postgres 16 because Langfuse v2's migrations are tested against
+  #  14-16; PG 17 may or may not work, no need to find out the hard way.
+  # =========================================================================
+  langfuse-db:
+    image: postgres:16-alpine
+    container_name: langfuse-db
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: ${LANGFUSE_DB_PASSWORD}
+      POSTGRES_DB: langfuse
+
+    volumes:
+      - langfuse-pg-data:/var/lib/postgresql/data
+
+    networks:
+      - llm-stack
+
+    # No published port — Langfuse reaches it via service-name DNS only.
+    # If you need to poke at it: `docker compose exec langfuse-db psql -U langfuse`.
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse -d langfuse"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # =========================================================================
+  #  Langfuse v2 web app
+  # -------------------------------------------------------------------------
+  #  Hosts the UI, the API for the SDK, AND the OTLP HTTP ingestion endpoint
+  #  used by OpenLLMetry in Phase 1.2. Single container, no worker — that's
+  #  the simplification v3 trades away in exchange for ClickHouse-backed
+  #  analytics.
+  # =========================================================================
+  langfuse:
+    # `:2` tracks the v2 major; pinned to a specific minor in Phase 1.4.
+    image: langfuse/langfuse:2
+    container_name: langfuse
+    restart: unless-stopped
+
+    environment:
+      # Connection to the Postgres above. Use the service name as host —
+      # no host port is published, so this is the only way to reach it.
+      DATABASE_URL: postgresql://langfuse:${LANGFUSE_DB_PASSWORD}@langfuse-db:5432/langfuse
+      # NextAuth expects to know its own external URL. We publish on 3001
+      # to avoid colliding with Grafana on 3000.
+      NEXTAUTH_URL: http://localhost:3001
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
+      SALT: ${LANGFUSE_SALT}
+      # Disable Langfuse's anonymous usage telemetry — this is a learning
+      # sandbox, no need to ship pings out.
+      TELEMETRY_ENABLED: "false"
+      # Phase 1.2 needs OTLP enabled; it's on by default in v2 but explicit
+      # documentation is cheap.
+      LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "true"
+
+    ports:
+      - "3001:3000"                          # host 3001 → container 3000 (avoids Grafana clash)
+
+    networks:
+      - llm-stack
+
+    depends_on:
+      langfuse-db:
+        condition: service_healthy
+
+    # Langfuse v2 ships Next.js in "standalone" mode, which binds the HTTP
+    # listener to the container's own hostname/IP (e.g. 172.20.0.4:3000)
+    # rather than 0.0.0.0:3000. Result: from inside the container,
+    # `localhost:3000` and `127.0.0.1:3000` are refused; only the
+    # container-hostname (or its IP) works. From the host this is hidden
+    # because we publish 3001:3000, so external traffic still arrives fine.
+    # `$(hostname)` resolves via /etc/hosts to the bound IP at check time.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://$(hostname):3000/api/public/health > /dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s

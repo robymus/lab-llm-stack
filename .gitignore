@@ -1,0 +1,40 @@
+# --- Secrets ---------------------------------------------------------------
+# Real env files contain HF tokens, Langfuse API keys, LiteLLM master keys.
+# Only the *.example templates are committed.
+.env
+.env.local
+.env.*.local
+*.secret
+*.key
+
+# --- Python ----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# --- Container-mounted runtime data ----------------------------------------
+# Everything under these paths is owned by container users (often root) and is
+# regenerated on `docker compose up`. We never want it tracked.
+prometheus/data/
+grafana/data/
+langfuse/data/
+hf-cache/
+
+# --- Editor / OS noise -----------------------------------------------------
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# --- Build / test artefacts ------------------------------------------------
+dist/
+build/
+*.log
