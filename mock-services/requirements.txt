@@ -1,0 +1,13 @@
+# =============================================================================
+#  mock-services dependencies
+# -----------------------------------------------------------------------------
+#  Pinned. Bumping any of these should be a deliberate commit — the agent
+#  app's tools depend on the exact response shapes.
+# =============================================================================
+
+fastapi==0.115.4
+uvicorn[standard]==0.32.0
+# Auto-instruments the FastAPI app with request count, latency histogram,
+# and exposes /metrics in Prometheus format. Saves us writing a custom
+# middleware.
+prometheus-fastapi-instrumentator==7.0.0

@@ -90,3 +90,42 @@ groups:
           DCGM_FI_DEV_FB_USED
             /
           (DCGM_FI_DEV_FB_USED + DCGM_FI_DEV_FB_FREE)
+
+  # -------------------------------------------------------------------------
+  #  KV cache sizing constants
+  # -------------------------------------------------------------------------
+  #  vLLM only ships `vllm:gpu_cache_usage_perc` (a fraction, 0..1) — there's
+  #  no built-in "bytes used" metric. To plot bytes we need two constants:
+  #
+  #   * total token capacity = num_gpu_blocks × block_size
+  #     - num_gpu_blocks and block_size come from `vllm:cache_config_info`'s
+  #       labels at startup (visible via: curl :8000/metrics | grep cache_config_info).
+  #     - These depend on (model, gpu-memory-utilization, GPU VRAM).
+  #     - At impl time we observed: num_gpu_blocks=5415, block_size=16
+  #       → 86,640 token slots.
+  #
+  #   * bytes per token = 2 (K+V) × num_layers × num_kv_heads × head_dim × dtype_bytes
+  #     - Qwen2.5-3B-Instruct-AWQ: 36 layers, 2 KV heads (GQA), head_dim 128, bf16 KV
+  #       → 2 × 36 × 2 × 128 × 2 = 36,864 bytes/token.
+  #
+  #  These are exposed as `vector(...)` constants so dashboards can multiply
+  #  cleanly. **Update both lines when you change the model OR --gpu-memory-utilization**:
+  #     1. `docker compose exec vllm-engine curl -s localhost:8000/metrics | grep cache_config_info`
+  #     2. Replace 86640 with the new num_gpu_blocks × block_size.
+  #     3. If the model changed, recompute bytes/token from its config.json
+  #        (look for num_hidden_layers, num_key_value_heads, head_dim) and
+  #        update kv_cache_total_bytes accordingly.
+  - name: kv-cache-sizing
+    interval: 30s
+    rules:
+      - record: vllm:kv_cache_total_tokens
+        expr: vector(86640)
+      - record: vllm:kv_cache_total_bytes
+        # 86640 token-slots × 36864 bytes/token = 3,193,896,960 bytes (~3.19 GB)
+        expr: vector(3193896960)
+      # NOTE: don't add a recording rule for *used* bytes/tokens. The KV cache
+      # fills and drains in 1-2 seconds during chat turns, but rules evaluate
+      # every 30 s — they'd almost always sample a 0. Instead, dashboard panels
+      # compute `vllm:gpu_cache_usage_perc * scalar(vllm:kv_cache_total_bytes)`
+      # inline, which Prometheus evaluates per query at the dashboard's
+      # refresh rate (5 s) — far more responsive.

@@ -1,0 +1,33 @@
+# =============================================================================
+#  Agent app dependencies
+# -----------------------------------------------------------------------------
+#  Pinned. The langchain ↔ openai ↔ langfuse compatibility matrix is the
+#  brittlest part of this stack — bumping any of the three means re-testing
+#  that Langfuse traces still show the chain → llm → tool tree.
+#
+#  ===== Why no traceloop-sdk / OpenLLMetry =====================
+#  Langfuse v2 doesn't expose an OTLP/HTTP ingestion endpoint — that was
+#  added in v3 (which requires ClickHouse, Redis, and Minio). The plan
+#  deliberately uses v2 for simplicity, so we use Langfuse's NATIVE
+#  LangChain callback handler instead. Same trace tree in the UI, just
+#  a different transport. If we ever upgrade to v3, we can revisit OTLP.
+# =============================================================================
+
+# --- UI -------------------------------------------------------------------
+streamlit==1.40.1
+
+# --- LangChain (agent + tool-calling) -------------------------------------
+langchain==0.3.7
+langchain-core==0.3.18
+langchain-openai==0.2.8
+
+# --- OpenAI client (used by langchain-openai underneath) ------------------
+openai==1.54.3
+
+# --- Tool calls into mock-services ---------------------------------------
+httpx==0.27.2
+
+# --- Langfuse trace export (v2-compatible SDK) ---------------------------
+# v2.x SDK targets Langfuse-server v2.x. v3.x SDK targets v3-server.
+# Don't cross-mix.
+langfuse==2.60.0

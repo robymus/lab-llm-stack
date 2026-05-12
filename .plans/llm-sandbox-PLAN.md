@@ -181,6 +181,12 @@ llm-stack/
 
 ### 5.1 vLLM engine
 
+> **Implementation note (Phase 1.2):** Tool-calling via OpenAI's
+> `tool_choice="auto"` requires two extra flags vLLM doesn't enable by
+> default: `--enable-auto-tool-choice` and `--tool-call-parser hermes`
+> (the `hermes` parser matches Qwen2.5's chat template). Without them
+> the agent's first turn 400s.
+
 Image: `vllm/vllm-openai:latest` (pin a specific tag in the actual compose — TBD at impl time).
 
 Key points to call out in `vllm/README.md`:
@@ -366,6 +372,16 @@ Image: `nvcr.io/nvidia/k8s/dcgm-exporter:3.3.5-3.4.0-ubuntu22.04` (pin at impl).
 - A custom `dcp-metrics-included.csv` lets us trim to fields we care about (power, SM activity, mem used, mem clock, temp). Documented in `dcgm/README.md` with one line per field explaining what it represents physically.
 
 ### 5.7 Langfuse
+
+> **Implementation note (Phase 1.2):** Langfuse v2 does *not* expose an
+> OTLP/HTTP ingestion endpoint — that's a v3-only feature requiring the
+> ClickHouse worker. We had to drop the planned `traceloop-sdk` (OpenLLMetry)
+> + OTLP path and use Langfuse's **native LangChain `CallbackHandler`**
+> instead. The trace tree visible in the UI is identical (chain → llm → tool);
+> only the transport differs. Side-effect loss: httpx auto-instrumentation
+> doesn't produce separate child spans under each tool — the per-tool HTTP
+> round trip is observable instead via `mock-services` `/metrics`. If we
+> ever upgrade to v3, the OTLP path becomes available again.
 
 **Recommendation:** Self-host **Langfuse v2** (single web container + Postgres) for Phase 1.
 - Reasoning: Langfuse v3 splits into web + worker + Postgres + ClickHouse + Redis + Minio. Production-realistic but six containers is a lot of moving parts for a sandbox whose focus is the LLM stack, not the trace store. The v2 path is two containers and gives you full OTLP ingestion, the UI, and Langfuse SDK access. v3 upgrade is a follow-up exercise.

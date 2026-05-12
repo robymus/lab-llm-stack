@@ -99,30 +99,34 @@
 ## Phase 1.2 — App + traces
 
 > Exit: a Streamlit chat exchange with a multi-part prompt produces a Langfuse trace tree containing the chain root, multiple tool spans, an httpx GET span under each tool, the `X-User-Id` on the root span, and at least one error span when `flaky_call` rolls a 500.
+>
+> **Status: COMPLETE.** Two material deviations from the plan, both documented in PLAN §5.1 and §5.7 and in the per-service READMEs:
+> 1. **Langfuse v2 does not accept OTLP/HTTP** (v3-only feature) — dropped `traceloop-sdk` and switched to the Langfuse-native LangChain `CallbackHandler`. The chain → llm → tool tree appears identically in the UI; the per-tool httpx sub-spans don't (workaround: `mock-services` exposes its own `/metrics` for that visibility).
+> 2. **vLLM tool-calling needs explicit flags** — added `--enable-auto-tool-choice` and `--tool-call-parser hermes` to the vLLM command. Without them every agent turn 400s.
 
 ### Mock services (plan §5.8)
-- [ ] `mock-services/requirements.txt`: `fastapi`, `uvicorn[standard]`, `prometheus-fastapi-instrumentator`
-- [ ] `mock-services/main.py`: implement `/weather/{city}`, `/news`, `/stocks/{ticker}`, `/docs/search`, `/flaky`, `/metrics`; canned datasets defined as top-level constants; flaky endpoint uses seeded `random` so behaviour is reproducible per `seed` arg
-- [ ] `mock-services/Dockerfile`: slim Python base, COPY + pip install, EXPOSE 9000, CMD uvicorn
-- [ ] Add `mock-services` service to compose with port `9000:9000` and healthcheck
-- [ ] Write `mock-services/README.md`: endpoint reference table, why each one exists (network spans, error spans, etc.), how to extend
-- [ ] Smoke test: `curl localhost:9000/weather/london`, `curl localhost:9000/flaky?seed=x` (try a few seeds to see both 200 and 500)
-- [ ] Add a Prometheus scrape job for `mock-services:9000` and verify it shows in `/targets`
+- [x] `mock-services/requirements.txt`: pinned fastapi==0.115.4, uvicorn[standard]==0.32.0, prometheus-fastapi-instrumentator==7.0.0
+- [x] `mock-services/main.py`: six endpoints (`/health`, `/weather/{city}`, `/news`, `/stocks/{ticker}`, `/docs/search`, `/flaky`), all canned datasets as module-level constants, `/flaky` deterministic via md5(seed)[0]<76
+- [x] `mock-services/Dockerfile`: python:3.11-slim, ENV PYTHONUNBUFFERED, deps before app code
+- [x] `mock-services` service in compose: build context, port 9000:9000, python-based healthcheck on `/health`
+- [x] Smoke tests: known/unknown city lookups (200/404), ticker lookups, news, doc search, flaky seed sweep showing both 200 + 500
+- [x] Prometheus scrape job `mock-services` added with `layer: app`; appeared in `/targets` after `curl -X POST :9090/-/reload`
 
 ### Agent app — plumbing (plan §5.3)
-- [ ] `app/requirements.txt`: streamlit, langchain, langchain-openai, openai, httpx, traceloop-sdk — pinned and each pin commented
-- [ ] `app/tools.py`: implement the five `@tool`-decorated functions per plan §5.3, sharing one `httpx.Client` against `MOCK_SERVICES_URL`; docstrings written so the LLM understands when to pick each one
-- [ ] `app/agent.py`: Traceloop.init **first**, then ChatOpenAI with `default_headers={"X-User-Id": ...}`, `create_tool_calling_agent` with `ALL_TOOLS`, `AgentExecutor(..., max_iterations=6)`; SYSTEM_PROMPT that nudges multi-tool plans
-- [ ] `app/app.py`: Streamlit UI — user_id prompt on first load (stored in `st.session_state`), chat history rendering, agent invocation per turn, error display
-- [ ] `app/Dockerfile`: slim Python base, COPY + pip install, EXPOSE 8501, CMD streamlit run
-- [ ] Add `app` service to compose: env (`OPENAI_API_BASE`, `LITELLM_MASTER_KEY`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `LANGFUSE_AUTH_B64`, `MOCK_SERVICES_URL`), `depends_on` litellm + mock-services + langfuse
-- [ ] Write `app/README.md`: what the app does, where the trace originates, how the trace tree maps to user actions, how to extend with a new tool
+- [x] `app/requirements.txt`: pinned streamlit==1.40.1, langchain==0.3.7, langchain-core==0.3.18, langchain-openai==0.2.8, openai==1.54.3, httpx==0.27.2, langfuse==2.60.0. **Deliberate omission: no `traceloop-sdk`** — Langfuse v2 lacks OTLP, so the OpenLLMetry path doesn't work
+- [x] `app/tools.py`: five `@tool` functions sharing one `httpx.Client`, docstrings written so the LLM picks the right one
+- [x] `app/agent.py`: Langfuse `CallbackHandler` per user, ChatOpenAI with both `default_headers={"X-User-Id": …}` AND `model_kwargs={"user": …}`, `create_tool_calling_agent` + `AgentExecutor(max_iterations=6)`. **Critical: callbacks passed via `invoke(config=…)` not `AgentExecutor(callbacks=…)`** — the latter only fires at the outermost span in LangChain 0.3+
+- [x] `app/app.py`: Streamlit chat UI, user-id gate on first load, chat history via session state, `handler.flush()` after every turn so traces appear within a second
+- [x] `app/Dockerfile`: python:3.11-slim, build-essential install+purge around pip (some traceloop deps would need C — kept for safety), CMD streamlit with headless + telemetry off
+- [x] `app` service in compose: env (OPENAI_API_BASE, LITELLM_MASTER_KEY, LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY, MOCK_SERVICES_URL), `depends_on` litellm/mock-services/langfuse all healthy, python-based healthcheck on `/_stcore/health`
+- [x] vLLM command updated: added `--enable-auto-tool-choice --tool-call-parser hermes` (Qwen parser)
 
 ### End-to-end trace verification
-- [ ] Send a single-tool prompt ("weather in Paris?") and verify a chain → llm → tool → httpx → llm tree appears in Langfuse with `user_id` attribute on the root
-- [ ] Send a multi-tool prompt ("umbrella in London and NVDA price?") and confirm multiple tool spans
-- [ ] Trigger `flaky_call` enough times to land a 500; confirm Langfuse renders the failed span clearly
-- [ ] Confirm LiteLLM logs show the `X-User-Id` header arriving from the app
+- [x] Single-tool prompt produces a 17-observation trace: AgentExecutor → RunnableSequence → ChatPromptTemplate → ChatOpenAI [GENERATION] → ToolsAgentOutputParser → tool span → second RunnableSequence → final ChatOpenAI
+- [x] Multi-tool prompt ("umbrella + NVDA") produces two tool spans (`get_current_weather`, `get_stock_price`) as siblings under the root, then a second LLM call for synthesis
+- [x] `flaky_call(seed='a')` lands an HTTPStatusError 500; AgentExecutor surfaces the exception cleanly
+- [x] Per-user attribution: 4 distinct user_ids on 8 traces in Langfuse (robert/maliwan/smoke-test-user/smoke-test-v2)
+- [x] `X-User-Id` forwarded to vLLM via LiteLLM's `forward_client_headers_to_llm_api`; visible via the Langfuse SDK's user_id field. **Note:** LiteLLM's per-`end_user` Prometheus label requires virtual API keys; for Phase 1 the per-user view lives in Langfuse
 
 ---
 
@@ -166,17 +170,20 @@
 
 ---
 
-## Out of scope (Phase 2 / later)
+## Phase 2 (out of scope)
 
 Captured here so we don't keep re-evaluating them mid-stream:
 
 - Triton + TensorRT-LLM as a second `model_list` entry
 - Compiling a TRT-LLM engine for compute capability 8.9
-- Langfuse v3 (ClickHouse + Redis + Minio)
+- Langfuse v3 (ClickHouse + Redis + Minio) - this enables OpenLLMetry
+- OpenLLMetry instead of direct callback
 - OpenTelemetry Collector as a routing hub
 - Logs pillar (Loki + Promtail)
 - Per-tenant cost tracking and rate limiting in LiteLLM
 - Streaming responses end-to-end (Streamlit token streaming + LiteLLM streaming + vLLM SSE)
+
+## Out of scope of this lab
 - Grafana alerts / Alertmanager
 - Authenticated Grafana (today: anonymous read)
 

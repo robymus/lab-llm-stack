@@ -87,6 +87,13 @@ services:
       - --enable-prefix-caching               # makes prefix-cache-hit metrics non-zero — observable lesson
       - --served-model-name
       - qwen-chat                             # stable alias the gateway routes to; weight name can change
+      # Tool-calling support — required for the agent app's tool_choice="auto".
+      # Without these vLLM 400s with: "auto tool choice requires --enable-auto-tool-choice".
+      # `hermes` is the parser that matches Qwen2.5's chat template; other models
+      # use different parsers (e.g. `llama3_json` for Llama 3.x).
+      - --enable-auto-tool-choice
+      - --tool-call-parser
+      - hermes
       - --host
       - 0.0.0.0
       - --port
@@ -534,3 +541,82 @@ services:
       timeout: 5s
       retries: 5
       start_period: 15s
+
+  # =========================================================================
+  #  mock-services (tool backend for the agent app)
+  # -------------------------------------------------------------------------
+  #  Tiny FastAPI app the agent's LangChain tools call over HTTP. The whole
+  #  reason this is a separate container (not in-process functions) is so
+  #  Langfuse traces contain real network spans under each tool span.
+  #  Also exposes its own /metrics for Prometheus — a seventh scrape target.
+  # =========================================================================
+  mock-services:
+    build:
+      context: ./mock-services
+    image: llm-stack/mock-services:phase-1.2
+    container_name: mock-services
+    restart: unless-stopped
+
+    ports:
+      - "9000:9000"
+
+    networks:
+      - llm-stack
+
+    healthcheck:
+      # Image is python:3.11-slim — no wget or curl, but Python is right there.
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:9000/health',timeout=3).status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # =========================================================================
+  #  Streamlit + LangChain agent app
+  # -------------------------------------------------------------------------
+  #  The reason all the rest of this exists. Streamlit chat UI; each turn
+  #  invokes a LangChain agent that can call any of five tools. OpenLLMetry
+  #  (Traceloop) auto-instruments LangChain + the openai client + httpx,
+  #  pushing OTLP/HTTP to Langfuse.
+  # =========================================================================
+  app:
+    build:
+      context: ./app
+    image: llm-stack/app:phase-1.2
+    container_name: app
+    restart: unless-stopped
+
+    environment:
+      # Gateway endpoint and master key. The app talks to LiteLLM, never
+      # to vLLM directly — that's the orchestration lesson.
+      OPENAI_API_BASE: http://litellm:4000
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+      # Langfuse v2-compatible SDK reads these directly (public_key, secret_key,
+      # host). We send to Langfuse-native ingestion, not OTLP — see
+      # app/agent.py for why (v2 doesn't speak OTLP/HTTP).
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY}
+      # Tool backend.
+      MOCK_SERVICES_URL: http://mock-services:9000
+
+    ports:
+      - "8501:8501"
+
+    networks:
+      - llm-stack
+
+    depends_on:
+      litellm:
+        condition: service_healthy
+      mock-services:
+        condition: service_healthy
+      langfuse:
+        condition: service_healthy
+
+    # Streamlit's `/_stcore/health` returns "ok" once the script is loaded.
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8501/_stcore/health',timeout=3).status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s

@@ -77,6 +77,18 @@ scrape_configs:
         labels: { layer: hardware }
 
   # ---------------------------------------------------------------------
+  #  mock-services (Phase 1.2 — tool backend for the agent)
+  # ---------------------------------------------------------------------
+  # FastAPI app with prometheus-fastapi-instrumentator. Series prefixed
+  # `http_request_*`. Gives us per-endpoint latency on the tool layer —
+  # useful for correlating tool span latency in Langfuse with the actual
+  # backend response time here.
+  - job_name: mock-services
+    static_configs:
+      - targets: ["mock-services:9000"]
+        labels: { layer: app }
+
+  # ---------------------------------------------------------------------
   #  Prometheus itself
   # ---------------------------------------------------------------------
   # Scrape ourselves so we can plot scrape_duration_seconds and target
