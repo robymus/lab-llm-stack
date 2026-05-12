@@ -1,8 +1,13 @@
-# Manual test plan — Phases 1.0 → 1.2
+# 01 · Getting started
 
-> A scripted walk through the running stack. Each section has *what to do*,
-> *where to look*, and *what good looks like*. Run them in order on a fresh
-> `docker compose up -d`.
+> First doc to read after a fresh clone. A scripted walk through the
+> running stack: each section has *what to do*, *where to look*, and
+> *what good looks like*. Run in order after `docker compose up -d`.
+>
+> Once you've finished this, the next docs go deeper:
+> [02 anatomy of a request](02-anatomy-of-a-request.md) ·
+> [03 saturation analysis](03-saturation-analysis.md) ·
+> [04 trace ↔ metric correlation](04-trace-metric-correlation.md).
 
 ## 0. Preflight
 
@@ -189,16 +194,19 @@ Each should return at least one series with values that look sane.
 
 ## 6. Saturation glimpse (optional)
 
-If you want to *see* the dashboards under load (not just idle), fire a
-quick burst of concurrent requests:
+If you want to *see* the dashboards under load (not just idle), the
+quickest sniff test is a burst of concurrent `curl`s:
 
 ```bash
 MK=$(grep ^LITELLM_MASTER_KEY .env | cut -d= -f2)
 for i in $(seq 1 30); do
-  curl -s -o /dev/null --max-time 60 \
-    -H "Authorization: Bearer $MK" -H 'Content-Type: application/json' \
-    -d '{"model":"qwen-chat","messages":[{"role":"user","content":"count to 20"}],"max_tokens":100}' \
-    http://localhost:4000/v1/chat/completions &
+  (
+    code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 120 \
+      -H "Authorization: Bearer $MK" -H "Content-Type: application/json" \
+      -d '{"model":"qwen-chat","messages":[{"role":"user","content":"count to 50 slowly"}],"max_tokens":200}' \
+      http://localhost:4000/v1/chat/completions)
+    echo "[$i] http=$code"
+  ) &
 done
 wait
 ```
@@ -206,12 +214,13 @@ wait
 While it runs:
 - **LLM Overview** — `Queue depth / active batch` panel: `running` climbs
   into the 5–15 range, `waiting` shows transient spikes.
-- **KV cache usage** gauge — goes amber/red while the batch holds.
+- **KV cache used (bytes)** — climbs into the tens of MB; `max 1m` line
+  holds the peak for 60 s after the burst.
 - **GPU Saturation** — power panel pegs near its peak for tens of seconds.
 
-This is the metric that tells you the gateway is fine but the engine is
-the bottleneck — exactly the "saturation analysis" lesson the plan calls
-out (and that Phase 1.3 will formalise with `vegeta`).
+For *structured* load testing — varied prompts, multiple profiles,
+ramping rates — see [03-saturation-analysis.md](03-saturation-analysis.md),
+which walks through `scripts/load.sh`.
 
 ---
 

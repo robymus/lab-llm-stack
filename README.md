@@ -5,11 +5,27 @@ observability plane wired up around it. Built for **learning** — every layer
 exists to teach one thing, and every config decision has a comment or a
 README explaining why.
 
-> Status: **Phase 1.0 implemented** — vLLM + LiteLLM + Langfuse v2 running
-> as containers. Hardware obs (Phase 1.1), agent app (Phase 1.2), walkthrough
-> docs (1.3), and CI (1.4) are next. See [.plans/llm-sandbox-PLAN.md](.plans/llm-sandbox-PLAN.md)
-> for the full plan and [.plans/llm-sandbox-TODO.md](.plans/llm-sandbox-TODO.md)
-> for current progress.
+> Status: **Phases 1.0 → 1.3 implemented** — eleven services healthy under
+> `docker compose up -d`: vLLM (Qwen2.5-3B-AWQ) + LiteLLM gateway + Langfuse
+> traces + Prometheus/Grafana + DCGM/node/cAdvisor exporters + Streamlit
+> agent app + mock-services tool backend. Phase 1.4 (CI + polish) is next.
+> See [.plans/llm-sandbox-PLAN.md](.plans/llm-sandbox-PLAN.md) for the full
+> plan and [.plans/llm-sandbox-TODO.md](.plans/llm-sandbox-TODO.md) for
+> current progress.
+
+## What it looks like
+
+The **LLM Overview** dashboard during a saturation event (`./scripts/load.sh marathon --rate=50/s --variations=100`). Request completion rate collapses, queue and in-flight climb, KV cache pegs at slab capacity, prefix-cache hit rate drops as the salted prompts defeat the cache:
+
+![LLM Overview dashboard under saturation load](docs/images/llm-graph.png)
+
+The **GPU Saturation** dashboard for the same window. The bottom panel — *GPU power ↔ LLM p95 latency on a shared time axis* — is the headline lesson: power sits at TGP while p95 latency climbs into the minutes:
+
+![GPU Saturation dashboard with the power ↔ latency correlation panel](docs/images/gpu-graph.png)
+
+A **Langfuse trace** for a multi-tool chat turn from the Streamlit app — chain → llm (generation) → tool calls → llm → final reply, with the full span tree on the right:
+
+![Langfuse trace detail showing the chain → llm → tool span tree](docs/images/trace.png)
 
 ## Quick links
 
@@ -85,13 +101,15 @@ open http://localhost:3001
 
 ## Read the docs in this order
 
+**Big picture / per-service:**
 1. [ARCHITECTURE.md](ARCHITECTURE.md) — the map.
-2. [vllm/README.md](vllm/README.md) — what's actually running on the GPU.
-3. [litellm/README.md](litellm/README.md) — the orchestration seam.
-4. [langfuse/README.md](langfuse/README.md) — where traces go (and how to create the API keys before Phase 1.2).
+2. Per-service READMEs (skim or deep-dive any of these): [vllm/](vllm/README.md), [litellm/](litellm/README.md), [langfuse/](langfuse/README.md), [prometheus/](prometheus/README.md), [grafana/](grafana/README.md), [dcgm/](dcgm/README.md), [app/](app/README.md), [mock-services/](mock-services/README.md).
 
-Later phases will add `prometheus/`, `grafana/`, `dcgm/`, `app/`, and the
-`docs/` walkthroughs.
+**Hands-on walkthroughs** ([docs/](docs/README.md), in order):
+1. [docs/01-getting-started.md](docs/01-getting-started.md) — first-run smoke tests, URL reference, multi-tenancy demo.
+2. [docs/02-anatomy-of-a-request.md](docs/02-anatomy-of-a-request.md) — one prompt traced through every layer.
+3. [docs/03-saturation-analysis.md](docs/03-saturation-analysis.md) — `scripts/load.sh` with seven vegeta profiles, what lights up each panel.
+4. [docs/04-trace-metric-correlation.md](docs/04-trace-metric-correlation.md) — picking one trace and finding its GPU-power signature.
 
 ## Repository layout
 

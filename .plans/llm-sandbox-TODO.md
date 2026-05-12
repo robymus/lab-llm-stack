@@ -133,12 +133,20 @@
 ## Phase 1.3 — Walkthrough docs
 
 > Exit: a new reader can sit down, follow `docs/01..04` in order, and understand each layer + how to read what it's telling them.
+>
+> **Status: COMPLETE.** One material deviation: load-tester swapped from vegeta (Go) to **trunks** (Rust port, same author) at the user's request — install path is `cargo install trunks`, no other change to the methodology. The saturation profile became a single 90 s linear ramp (`--pace linear --slope 0.11`) instead of three discrete stages — more elegant and shows the latency knee continuously rather than as a step.
 
-- [ ] `docs/01-getting-started.md`: preflight checks, `cp .env.example .env`, `docker compose up`, the smoke tests, where to go first in each UI
-- [ ] `docs/02-anatomy-of-a-request.md`: one prompt traced through every layer — Streamlit log → LangChain agent → LiteLLM access log → vLLM request → vLLM response → LangChain tool call → mock-services log → Langfuse trace — with curl/log snippets at each hop
-- [ ] `docs/03-saturation-analysis.md`: install vegeta locally, run a ramping attack (`vegeta attack -rate 1/s` then 5/s, 10/s) against LiteLLM, screenshot the GPU and queue panels, explain what each Prometheus series does at each rate
-- [ ] `docs/04-trace-metric-correlation.md`: pick one Langfuse trace; locate its wall-clock time on the GPU power panel; explain the prefill/decode burstiness pattern; show how to spot it without traces (queue depth + power together)
-- [ ] Update root `README.md` with a "Read these next" section pointing at all four docs in order
+### Load tester (`scripts/load.sh`)
+- [x] `scripts/load.sh` — trunks-based runner with 7 profiles (smoke, short, decode-heavy, prefill-heavy, prefix-cache, mixed, saturation), curated prompt sets per profile (~40 distinct prompts across short/long-gen/long-input/prefix-cache), inline-generated JSON payloads + HTTP-format targets, per-attack binary + CSV output, text + histogram reports
+- [x] Smoke-tested against the live stack: smoke profile returns 100% 200s, p95 ~195 ms; 30 s saturation ramp climbs from 2/s to ~5.3/s with p95 widening from 80 ms → 808 ms — knee visible exactly as intended
+- [x] Prompt set is *intentionally varied* (incident reports, microservices walkthrough, OAuth tutorial, fictional sysadmin story, etc.) so trace samples don't all look the same
+
+### Walkthrough docs (`docs/01..04`)
+- [x] `docs/01-getting-started.md`: preflight, per-layer curl smoke tests, single Streamlit chat, multi-tenancy demo, optional saturation glimpse (with the fixed concurrent-curl snippet), URL reference card (migrated from `manual-test-plan.md` via `git mv`)
+- [x] `docs/02-anatomy-of-a-request.md`: a multi-tool prompt (umbrella + NVDA) traced through every layer with the corresponding spans / metrics at each hop, plus the resulting 17-observation trace tree visualised in ASCII
+- [x] `docs/03-saturation-analysis.md`: trunks install, all 7 profiles explained with "what to expect on which dashboard", how to read a trunks text + histogram report, plot/CSV usage, and a small glossary (rps, tokens/s, TTFT, ITL)
+- [x] `docs/04-trace-metric-correlation.md`: the headline lesson — pick one Langfuse trace, zoom Grafana's GPU saturation panel to its wall-clock window, see the prefill vs decode burstiness pattern visually
+- [x] `docs/README.md` index updated; root `README.md` has a "Hands-on walkthroughs" section pointing at all four in order
 
 ---
 

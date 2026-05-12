@@ -115,6 +115,55 @@
         "overrides": []
       },
       "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Gateway success rate (server-side)",
+      "description": "Fraction of *completed* requests that returned 2xx, as observed by LiteLLM. IMPORTANT: this is SERVER-SIDE. A request that the client (e.g. trunks) times out on before a response arrives never gets a status_code label, so it doesn't appear here — the panel can read 100% even while most of the offered load is failing client-side. To catch overload before completions fail, watch the 'Gateway in-flight' panel to the right and the queue-depth panel above.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 0, "y": 24, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "llm:success_rate", "refId": "A", "legendFormat": "{{requested_model}}", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.95 },
+              { "color": "green", "value": 0.99 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Gateway in-flight requests",
+      "description": "Current number of requests the gateway is holding (received but not yet completed). Under healthy load this stays small (a few). When arrivals exceed sustainable throughput, this gauge climbs without bound — usually the earliest visible sign of overload, well before any client times out or any 5xx is emitted. If you see this climbing while success rate is still 100%, you're saturating: the gap between arrival and completion is filling the queue.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 12, "y": 24, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "litellm_in_flight_requests", "refId": "A", "legendFormat": "in-flight", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "single" } }
     }
   ],
   "refresh": "5s",

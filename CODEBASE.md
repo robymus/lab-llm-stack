@@ -7,21 +7,26 @@
 
 ## Current state
 
-**Phases 1.0 + 1.1 + 1.2 implemented.** Eleven services healthy under
-`docker compose up -d`: vLLM, LiteLLM, Langfuse (web + Postgres), DCGM
-exporter, node-exporter, cAdvisor, Prometheus, Grafana, mock-services,
-agent app. Streamlit chat → LangChain agent (5 tools) → mock-services
-produces trace trees in Langfuse with chain/llm/tool spans, grouped by
-user_id.
+**Phases 1.0 + 1.1 + 1.2 + 1.3 implemented.** Eleven services healthy
+under `docker compose up -d`: vLLM, LiteLLM, Langfuse (web + Postgres),
+DCGM exporter, node-exporter, cAdvisor, Prometheus, Grafana,
+mock-services, agent app. Streamlit chat → LangChain agent (5 tools)
+→ mock-services produces trace trees in Langfuse with chain/llm/tool
+spans, grouped by user_id. Phase 1.3 adds the **trunks-based load
+tester** (`scripts/load.sh` with 7 profiles) and four ordered
+walkthrough docs that take a new reader from cold to "I understand the
+prefill/decode burstiness pattern."
 
-Two material deviations from the plan landed in Phase 1.2 (both
-documented in PLAN §5.1, §5.7 and in `app/README.md`):
-- Langfuse v2 doesn't speak OTLP → use the Langfuse-native LangChain
-  callback handler instead of OpenLLMetry/Traceloop.
+Deviations from the plan along the way (documented inline + in PLAN/TODO):
+- Langfuse v2 doesn't speak OTLP → Langfuse-native LangChain callback
+  instead of OpenLLMetry/Traceloop.
 - vLLM needs `--enable-auto-tool-choice` and `--tool-call-parser hermes`
-  for tool calling to work.
+  for tool calling.
+- Load tester uses **trunks** (Rust) not vegeta — `cargo install trunks`.
+  Saturation profile is a single 90 s linear ramp instead of three
+  discrete stages.
 
-Phases 1.3 (walkthrough docs) and 1.4 (CI + polish) are pending.
+Phase 1.4 (CI + polish) is pending.
 
 ## Files by purpose
 
@@ -46,6 +51,7 @@ Phases 1.3 (walkthrough docs) and 1.4 (CI + polish) are pending.
 | ---- | ------------ |
 | [scripts/preflight.sh](scripts/preflight.sh) | Verifies host has Docker, Compose, NVIDIA driver, container toolkit + registered runtime, ≥30 GB disk, and a `.env`. Computes `LANGFUSE_AUTH_B64` automatically when both Langfuse keys are populated. |
 | [scripts/cleanup.sh](scripts/cleanup.sh) | Wipes the sandbox: stops containers, drops the network and all named volumes, removes pulled images. Destructive — confirms before acting. Flags: `-y`, `--keep-images`, `--keep-cache`, `--help`. |
+| [scripts/load.sh](scripts/load.sh) | Load tester driven by `trunks` (Rust port of vegeta — `cargo install trunks`). Seven profiles: smoke / short / decode-heavy / prefill-heavy / prefix-cache / mixed / saturation. Curated prompt sets (~40 prompts across categories) baked into the script; targets file + JSON payloads generated on the fly. Per-run binary + CSV under `/tmp/load-<profile>-<ts>/`. |
 
 ### Services (live in 1.0)
 | Folder | Implementation status | Key files |
@@ -68,10 +74,18 @@ Phases 1.3 (walkthrough docs) and 1.4 (CI + polish) are pending.
 | [mock-services/](mock-services/) | FastAPI app with 5 endpoints + `/metrics` + Prometheus scrape job + README | [mock-services/main.py](mock-services/main.py), [mock-services/Dockerfile](mock-services/Dockerfile), [mock-services/README.md](mock-services/README.md) |
 | [app/](app/) | Streamlit + LangChain agent + 5 tools + Langfuse `CallbackHandler` + README | [app/app.py](app/app.py), [app/agent.py](app/agent.py), [app/tools.py](app/tools.py), [app/Dockerfile](app/Dockerfile), [app/README.md](app/README.md) |
 
+### Walkthrough docs (live in 1.3)
+| File | What it covers |
+| ---- | -------------- |
+| [docs/README.md](docs/README.md) | Index — read these in order |
+| [docs/01-getting-started.md](docs/01-getting-started.md) | First-run smoke tests, per-layer curls, multi-tenancy demo, URL reference card |
+| [docs/02-anatomy-of-a-request.md](docs/02-anatomy-of-a-request.md) | One multi-tool prompt traced through every layer with the resulting spans + metrics |
+| [docs/03-saturation-analysis.md](docs/03-saturation-analysis.md) | All 7 `scripts/load.sh` profiles explained, what to watch on which dashboard, how to read a trunks report |
+| [docs/04-trace-metric-correlation.md](docs/04-trace-metric-correlation.md) | The headline lesson — pick one trace, find its GPU power signature, see prefill vs decode burstiness |
+
 ### Services (stubs for later phases)
 | Folder | Will arrive in | What's there now |
 | ------ | -------------- | ---------------- |
-| [docs/](docs/) | Phase 1.3 | Placeholder README |
 | [.github/workflows/](.github/workflows/) | Phase 1.4 | Empty |
 
 ## Compose service map (Phases 1.0 + 1.1 + 1.2)
