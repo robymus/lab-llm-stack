@@ -281,3 +281,256 @@ services:
       timeout: 5s
       retries: 10
       start_period: 30s
+
+  # =========================================================================
+  #  DCGM exporter (GPU telemetry → Prometheus)
+  # -------------------------------------------------------------------------
+  #  Talks to the NVIDIA driver via DCGM (NVIDIA Data Center GPU Manager)
+  #  and exposes a Prometheus-format /metrics endpoint on :9400. Gives us
+  #  the *honest* utilisation numbers (PROF_SM_ACTIVE, TENSOR_ACTIVE,
+  #  DRAM_ACTIVE) that nvidia-smi's coarse GPU-Util hides.
+  # =========================================================================
+  dcgm-exporter:
+    # The two-part tag = `<dcgm-exporter version>-<DCGM library version>`.
+    # Bumping for newer drivers (580.x in this lab) may need a 4.x image;
+    # if this one fails with "driver version mismatch" pinpoint a newer tag
+    # on NGC: https://catalog.ngc.nvidia.com/orgs/nvidia/teams/k8s/containers/dcgm-exporter/tags
+    image: nvcr.io/nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04
+    container_name: dcgm-exporter
+    restart: unless-stopped
+
+    # Pass the custom field list. Without `-f`, the exporter loads its
+    # default ~80-metric CSV — way more than we need.
+    command:
+      - -f
+      - /etc/dcgm-exporter/dcp-metrics-included.csv
+
+    # Some kernels / DCGM versions need elevated capabilities for the
+    # profiling counters (PROF_*). SYS_ADMIN is the standard recommendation;
+    # without it you'll still get DEV_* but PROF_* may be empty.
+    cap_add:
+      - SYS_ADMIN
+
+    ports:
+      - "9400:9400"
+
+    volumes:
+      - ./dcgm/dcp-metrics-included.csv:/etc/dcgm-exporter/dcp-metrics-included.csv:ro
+
+    networks:
+      - llm-stack
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all                       # share with vllm-engine; both can access the GPU concurrently
+              capabilities: [gpu, utility]     # `utility` lets DCGM read management counters
+
+    # DCGM exporter image is minimal: only bash, no wget/curl/python. Use
+    # bash's built-in /dev/tcp device file to make a real HTTP GET and
+    # check the status line. CMD form (not CMD-SHELL) because we need bash
+    # specifically — /bin/sh in this image may not be bash everywhere.
+    healthcheck:
+      test:
+        - "CMD"
+        - "bash"
+        - "-c"
+        - "exec 3<>/dev/tcp/localhost/9400; printf 'GET /metrics HTTP/1.0\\r\\n\\r\\n' >&3; head -n1 <&3 | grep -q ' 200 '"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # =========================================================================
+  #  node-exporter (host OS telemetry → Prometheus)
+  # -------------------------------------------------------------------------
+  #  Runs on the host's PID and network namespaces so it can read the real
+  #  /proc and /sys, not the container's. Exposes CPU, memory, disk, and
+  #  network counters on :9100/metrics.
+  # =========================================================================
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: node-exporter
+    restart: unless-stopped
+
+    # Read-only bind mounts of the host's /proc, /sys, and root. The
+    # `:ro,rslave` propagation lets us see new mounts that appear after
+    # container start (e.g. a USB drive); without it we'd be stuck on the
+    # snapshot at startup.
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro,rslave
+
+    # Point the collectors at the bind-mounted host paths instead of the
+    # container's own. The filesystem mount-points exclude pattern avoids
+    # reporting the pseudo-filesystems we're not interested in.
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --path.rootfs=/rootfs
+      - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)
+      - --collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tracefs)$$
+
+    ports:
+      - "9100:9100"
+
+    networks:
+      - llm-stack
+
+    # node-exporter has no /health endpoint; /metrics is the next best thing.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9100/metrics > /dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # =========================================================================
+  #  cAdvisor (per-container telemetry → Prometheus)
+  # -------------------------------------------------------------------------
+  #  Reads each container's cgroup files and exposes CPU/memory/IO usage
+  #  per-container on :8080/metrics. This is what tells you "the litellm
+  #  container is using 200 MB RAM" vs node-exporter's "the host is using
+  #  6 GB" — different layer, different question.
+  # =========================================================================
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.2
+    container_name: cadvisor
+    restart: unless-stopped
+
+    # cAdvisor needs read access to the host's cgroup filesystem and to
+    # Docker's metadata. It also wants /dev/kmsg so it can correlate OOM
+    # kills — important when you're saturating GPUs and the kernel starts
+    # culling processes.
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    devices:
+      - /dev/kmsg:/dev/kmsg
+    privileged: true                          # needed for perf-event access on some kernels
+
+    # Skip the metric families that bloat output without telling us anything
+    # useful for an LLM-serving workload. Valid categories vary by cAdvisor
+    # version — `accelerator` was removed somewhere around v0.49, so don't
+    # add it back. To see the full list: `cadvisor --help | grep -A2 disable_metrics`
+    command:
+      - --docker_only=true
+      - --housekeeping_interval=10s
+      - --disable_metrics=advtcp,hugetlb,memory_numa,percpu,referenced_memory,resctrl,sched,tcp,udp
+
+    ports:
+      - "8080:8080"
+
+    networks:
+      - llm-stack
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/healthz > /dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # =========================================================================
+  #  Prometheus (metrics store + recording rules)
+  # -------------------------------------------------------------------------
+  #  Pulls /metrics from every other service every 5 s, stores in its TSDB,
+  #  evaluates recording rules every 15 s so dashboards can hit pre-computed
+  #  series instead of recomputing histogram_quantile on every panel load.
+  # =========================================================================
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: prometheus
+    restart: unless-stopped
+
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # Keep ~7 days of data — plenty for a sandbox, capped so the volume
+      # doesn't grow without bound while you forget about it.
+      - --storage.tsdb.retention.time=7d
+      # /-/reload over HTTP — handy for `curl -X POST :9090/-/reload`
+      # after editing scrape config without bouncing the container.
+      - --web.enable-lifecycle
+
+    ports:
+      - "9090:9090"
+
+    volumes:
+      # Bind-mount the config (read-only) — edit-and-reload workflow.
+      - ./prometheus:/etc/prometheus:ro
+      # TSDB data lives in a named volume; survives `compose down`.
+      - prometheus-data:/prometheus
+
+    networks:
+      - llm-stack
+
+    # Don't gate on dependents being healthy — Prometheus should start up
+    # even if some scrape targets are down (it'll just mark them DOWN in
+    # /targets). That's the right behaviour for a monitoring system.
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # =========================================================================
+  #  Grafana (dashboards over Prometheus data)
+  # -------------------------------------------------------------------------
+  #  Datasource and dashboards come from `provisioning/` — no manual UI
+  #  setup. Two starter dashboards land in the "LLM Stack" folder:
+  #    01-llm-overview     — request rate, latency, tokens, queue, KV cache
+  #    02-gpu-saturation   — DCGM power/temp/mem/clocks + p95 overlay
+  # =========================================================================
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: grafana
+    restart: unless-stopped
+
+    environment:
+      # Sandbox-only: anonymous read so you don't have to log in. For any
+      # real deployment, replace with proper auth.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_DISABLE_LOGIN_FORM: "false"        # admin login still works for editing
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin          # rotate before any non-local use
+      # Disable telemetry to Grafana Labs.
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      # Don't auto-install the bundled welcome dashboard — we have our own.
+      GF_INSTALL_PLUGINS: ""
+
+    ports:
+      - "3000:3000"
+
+    volumes:
+      # Provisioning: datasource + dashboard-provider config. Read-only.
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      # Dashboards loaded by the file provider. Read-only — edits in the UI
+      # are kept in Grafana's DB but the source-of-truth JSON stays in git.
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      # Grafana's own SQLite + plugins.
+      - grafana-data:/var/lib/grafana
+
+    networks:
+      - llm-stack
+
+    depends_on:
+      prometheus:
+        condition: service_healthy
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health > /dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s

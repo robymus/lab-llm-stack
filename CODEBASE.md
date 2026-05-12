@@ -7,11 +7,14 @@
 
 ## Current state
 
-**Phase 1.0 — Infra skeleton: implemented (compose validates; runtime
-verification blocked on host toolkit install).**
+**Phases 1.0 + 1.1 implemented.** Nine services healthy under
+`docker compose up -d`: vLLM, LiteLLM, Langfuse (web + Postgres), DCGM
+exporter, node-exporter, cAdvisor, Prometheus, Grafana. All recording
+rules evaluate; both starter dashboards (LLM Overview, GPU Saturation)
+land in the "LLM Stack" folder with live data.
 
-Phases 1.1 (hardware obs), 1.2 (agent + traces), 1.3 (walkthrough docs),
-1.4 (CI + polish) are pending.
+Phases 1.2 (agent + traces), 1.3 (walkthrough docs), 1.4 (CI + polish)
+are pending.
 
 ## Files by purpose
 
@@ -44,45 +47,74 @@ Phases 1.1 (hardware obs), 1.2 (agent + traces), 1.3 (walkthrough docs),
 | [litellm/](litellm/) | Service + config + README done | [litellm/config.yaml](litellm/config.yaml), [litellm/README.md](litellm/README.md) |
 | [langfuse/](langfuse/) | Two services in compose, README + env crib done | [langfuse/README.md](langfuse/README.md), [langfuse/.env.langfuse.example](langfuse/.env.langfuse.example) |
 
+### Services (live in 1.1)
+| Folder | Implementation status | Key files |
+| ------ | --------------------- | --------- |
+| [dcgm/](dcgm/) | Service in compose, custom metric CSV, README done | [dcgm/dcp-metrics-included.csv](dcgm/dcp-metrics-included.csv), [dcgm/README.md](dcgm/README.md) |
+| [prometheus/](prometheus/) | Service + scrape config + recording rules + README | [prometheus/prometheus.yml](prometheus/prometheus.yml), [prometheus/rules/llm.rules.yml](prometheus/rules/llm.rules.yml), [prometheus/README.md](prometheus/README.md) |
+| [grafana/](grafana/) | Service + provisioning + 2 dashboards + README | [grafana/provisioning/](grafana/provisioning/), [grafana/dashboards/01-llm-overview.json](grafana/dashboards/01-llm-overview.json), [grafana/dashboards/02-gpu-saturation.json](grafana/dashboards/02-gpu-saturation.json), [grafana/README.md](grafana/README.md) |
+| `node-exporter`, `cadvisor` | Services in compose only — no per-service config beyond mounts. Notes live inline in [docker-compose.yaml](docker-compose.yaml). | — |
+
 ### Services (stubs for later phases)
 | Folder | Will arrive in | What's there now |
 | ------ | -------------- | ---------------- |
-| [prometheus/](prometheus/) | Phase 1.1 | Placeholder README + empty `rules/` |
-| [grafana/](grafana/) | Phase 1.1 | Placeholder README + empty `provisioning/`, `dashboards/` |
-| [dcgm/](dcgm/) | Phase 1.1 | Placeholder README |
 | [app/](app/) | Phase 1.2 | Placeholder README |
 | [mock-services/](mock-services/) | Phase 1.2 | Placeholder README |
 | [docs/](docs/) | Phase 1.3 | Placeholder README |
 | [.github/workflows/](.github/workflows/) | Phase 1.4 | Empty |
 
-## Compose service map (Phase 1.0)
+## Compose service map (Phases 1.0 + 1.1)
 
 ```
+  --- LLM serving plane -------------------------------------------------
             ┌──────────────┐
 host:8000 ──│ vllm-engine  │  Qwen2.5-3B-Instruct-AWQ on GPU
-            │ (vllm v0.6.6)│
+            │ v0.6.6       │  /metrics native
             └──────┬───────┘
                    │ http://vllm-engine:8000/v1
                    ▼
             ┌──────────────┐
 host:4000 ──│   litellm    │  routes "qwen-chat" → vllm
-            │ (main-stable)│  Phase 2 swap point lives in litellm/config.yaml
-            └──────────────┘
+            │ main-stable  │  /metrics/ (trailing slash!)
+            └──────────────┘                Phase 2 swap point: litellm/config.yaml
 
+  --- Trace store -------------------------------------------------------
             ┌──────────────┐
-            │ langfuse-db  │  postgres:16-alpine (internal-only, no host port)
+            │ langfuse-db  │  postgres:16-alpine (no host port)
             └──────┬───────┘
-                   │ postgresql://...@langfuse-db:5432
                    ▼
             ┌──────────────┐
-host:3001 ──│   langfuse   │  Trace UI + OTLP endpoint (used in Phase 1.2)
-            │  (v2 image)  │
+host:3001 ──│   langfuse   │  v2: trace UI + OTLP ingestion
             └──────────────┘
+
+  --- Observability plane (Phase 1.1) -----------------------------------
+            ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+host:9400 ──│ dcgm-exporter│  │ node-exporter│  │   cadvisor   │
+            │ 3.3.9-3.6.1  │  │   v1.8.2     │  │   v0.49.2    │
+            │ GPU metrics  │  │ host OS      │  │ per-container│
+            └──────┬───────┘  └──────┬───────┘  └──────┬───────┘
+                   │                 │                 │
+                   ▼                 ▼                 ▼
+            ┌─────────────────────────────────────────────────┐
+host:9090 ──│              prometheus  v3.1.0                  │
+            │  6 scrape jobs, recording rules every 15s        │
+            └────────────────────────┬────────────────────────┘
+                                     │ proxy queries
+                                     ▼
+                              ┌──────────────┐
+host:3000 ──────────────────  │   grafana    │  anonymous read
+                              │   11.4.0     │  2 provisioned dashboards
+                              └──────────────┘
 ```
 
-All four services share the `llm-stack` bridge network defined at the top
+All services share the `llm-stack` bridge network defined at the top
 of [docker-compose.yaml](docker-compose.yaml). State (HF cache, Postgres
-data, future Prometheus/Grafana state) lives in named volumes.
+data, Prometheus TSDB, Grafana SQLite) lives in named volumes.
+
+### Dashboard URLs
+- LLM Overview: <http://localhost:3000/d/llm-overview/llm-overview>
+- GPU Saturation: <http://localhost:3000/d/gpu-saturation/gpu-saturation>
+- Prometheus targets: <http://localhost:9090/targets>
 
 ## Env vars in use
 
@@ -115,17 +147,30 @@ These come into play later but are already templated:
 
 ## Known blockers / open items
 
-- **Host needs `nvidia-container-toolkit`** before `docker compose up` can
-  give vLLM GPU access. Preflight surfaces this; install commands in the
-  preflight output. Surfaced to user for decision.
 - **Langfuse API keys** must be created via the UI on first run, then
   pasted into `.env`. Preflight's `.env` step auto-computes
-  `LANGFUSE_AUTH_B64` from the pair.
-- **Image tags** for `vllm/vllm-openai:v0.6.6`, `ghcr.io/berriai/litellm:main-stable`,
-  and `langfuse/langfuse:2` are best-current-guess. Phase 1.4 re-verifies
-  against actual `docker pull` output.
+  `LANGFUSE_AUTH_B64` from the pair. *(Done on this host.)*
+- **DCP profiling (`DCGM_FI_PROF_*`)** is gated to data-centre GPUs and
+  unavailable on the 4060. Dashboards use `DEV_GPU_UTIL` + `SM_CLOCK` as
+  substitutes. To unlock the better saturation metrics on an A100/H100/L40,
+  uncomment the four PROF_* lines in `dcgm/dcp-metrics-included.csv`.
+- **Image tags** are best-current-guess; Phase 1.4 re-verifies them.
+- **LiteLLM `/metrics` requires trailing slash** — handled in Prometheus
+  scrape config; worth knowing if you ever poke it by hand.
 
-## How to extend (Phase 1.1+)
+## Observability quick-reference
+
+| Question | Where to look |
+| -------- | ------------- |
+| Is the gateway healthy? | <http://localhost:3000/d/llm-overview/llm-overview> panel "Request rate" + "p50/p95 latency" |
+| Is the GPU saturated? | <http://localhost:3000/d/gpu-saturation/gpu-saturation> panel "Power ↔ p95 latency" |
+| Per-user request volume? | Same overview dashboard — request-rate panel has a per-user series |
+| KV cache filling up? | LLM Overview, "KV cache usage" gauge |
+| Are all Prometheus targets up? | <http://localhost:9090/targets> |
+| Why is a target down? | `docker compose logs <service>` |
+| Discover a metric's exact name | `curl <service>/metrics | grep ^# HELP` (LiteLLM needs trailing slash on `/metrics/`) |
+
+## How to extend (Phase 1.2+)
 
 1. Pick the next pending task in [.plans/llm-sandbox-TODO.md](.plans/llm-sandbox-TODO.md).
 2. New service → add a block to `docker-compose.yaml` following the conventions

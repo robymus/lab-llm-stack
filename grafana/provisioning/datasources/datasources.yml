@@ -1,0 +1,21 @@
+# =============================================================================
+#  Grafana provisioned datasources
+# -----------------------------------------------------------------------------
+#  Grafana reads this on startup and adds the Prometheus datasource
+#  automatically. No manual UI step. `uid` is set explicitly so dashboards
+#  can reference it without depending on a generated id.
+# =============================================================================
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy           # Grafana proxies the query through itself; the browser never hits Prometheus directly
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false         # any "save" attempted in the UI is rejected; encourages keeping config in git
+    jsonData:
+      timeInterval: 5s      # match prometheus.yml's scrape_interval so $__rate_interval is sensible
+      httpMethod: POST      # POST tolerates much larger queries than GET

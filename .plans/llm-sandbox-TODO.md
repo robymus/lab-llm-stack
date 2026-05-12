@@ -60,33 +60,39 @@
 ## Phase 1.1 — Hardware observability
 
 > Exit: Grafana's `02-gpu-saturation` dashboard shows live power, SM activity, memory, and temperature curves while vLLM serves traffic.
+>
+> **Status: COMPLETE.** SM_ACTIVE (`DCGM_FI_PROF_SM_ACTIVE`) is gated to data-centre GPUs and unavailable on the 4060 (consumer Ada lacks the DCP profiling module — exporter log: *"Not collecting DCP metrics: This request is serviced by a module of DCGM that is not currently loaded"*). The dashboard substitutes `DEV_GPU_UTIL` + `SM_CLOCK` and documents the workaround in `dcgm/README.md`. Live power / temp / memory / clock curves all flow.
 
 ### DCGM exporter (plan §5.6)
-- [ ] Add `dcgm-exporter` service: image pinned (`nvcr.io/nvidia/k8s/dcgm-exporter:...`), port `9400:9400`, same GPU reservation as vLLM, `cap_add: [SYS_ADMIN]` if needed by the chosen image
-- [ ] Add a custom `dcgm/dcp-metrics-included.csv` trimming to the fields we care about (power, SM activity, mem used, mem clock, temp, util) — bind-mount it at `/etc/dcgm-exporter/default-counters.csv`
-- [ ] Write `dcgm/README.md`: one line per `DCGM_FI_*` field we include, explaining what it physically measures (e.g. "SM_ACTIVE = fraction of cycles at least one warp is resident on an SM — your real GPU utilisation, not the misleading `nvidia-smi` %")
-- [ ] Smoke test: `curl localhost:9400/metrics | grep DCGM_FI_DEV_POWER_USAGE` returns a number; sanity-check it tracks `nvidia-smi --query-gpu=power.draw --format=csv`
+- [x] `dcgm-exporter` added: pinned `nvcr.io/nvidia/k8s/dcgm-exporter:3.3.9-3.6.1-ubuntu22.04`, port 9400:9400, GPU reservation `capabilities: [gpu, utility]`, `cap_add: [SYS_ADMIN]`, bash-`/dev/tcp` healthcheck (image has no wget/curl, only bash)
+- [x] `dcgm/dcp-metrics-included.csv`: 8 active DEV_* fields, 4 PROF_* fields commented out with rationale (uncomment on data-centre GPU)
+- [x] `dcgm/README.md`: per-field physical meaning, SM_ACTIVE-vs-GPU_UTIL explanation, why PROF_* is gated, smoke tests, troubleshooting matrix
+- [x] Smoke tests: `curl :9400/metrics` returns plausible DCGM_FI_DEV_POWER_USAGE; verified against `nvidia-smi --query-gpu=power.draw`
 
 ### Host + container metrics
-- [ ] Add `node-exporter` service: `prom/node-exporter:latest` pinned, port `9100:9100`, mounts for `/proc`, `/sys`, `/` read-only as per upstream recipe
-- [ ] Add `cadvisor` service: `gcr.io/cadvisor/cadvisor:vX.Y` pinned, port `8080:8080`, mounts for `/`, `/var/run`, `/sys`, `/var/lib/docker` read-only as per upstream recipe
-- [ ] Smoke tests: `/metrics` reachable on both, returns plausible host CPU/mem and container stats
+- [x] `node-exporter` added: pinned `prom/node-exporter:v1.8.2`, port 9100:9100, `/proc`, `/sys`, `/` read-only with `rslave` propagation, filesystem mount-points-exclude list, `wget` healthcheck
+- [x] `cadvisor` added: pinned `gcr.io/cadvisor/cadvisor:v0.49.2`, port 8080:8080, host mounts read-only, `/dev/kmsg`, `privileged: true`, `--disable_metrics` tuned (note: `accelerator` was removed in v0.49 — see comment), `wget` healthcheck on `/healthz`
+- [x] Smoke tests: `/metrics` reachable on both (1333 series from node-exporter, 1010 from cAdvisor)
 
 ### Prometheus (plan §5.4)
-- [ ] Write `prometheus/prometheus.yml` per plan §5.4 (5s scrape, 15s eval, rule_files, all five scrape jobs)
-- [ ] Write `prometheus/rules/llm.rules.yml` per plan §5.4 (p95 latency, tokens/sec, GPU power recording rules) — **after** confirming actual metric names by `curl`ing each `/metrics` endpoint and listing the real series in `prometheus/README.md`
-- [ ] Add `prometheus` service to compose: `prom/prometheus:vX.Y` pinned, port `9090:9090`, mounts for `./prometheus:/etc/prometheus` and `prometheus-data` volume at `/prometheus`, args `--config.file=/etc/prometheus/prometheus.yml --web.enable-lifecycle`
-- [ ] Write `prometheus/README.md`: scrape config walkthrough, how to discover metric names (`curl :PORT/metrics | grep ^# HELP`), 6–8 useful PromQL recipes (per-tenant request rate, p95 latency, KV-cache pressure, GPU power moving average, etc.)
-- [ ] Smoke test: open `http://localhost:9090/targets`; all five jobs UP
+- [x] `prometheus/prometheus.yml`: 5s scrape, 15s eval, `external_labels` (cluster + env), six scrape jobs each with `layer:` label, `metrics_path: /metrics/` on the `litellm` job (trailing slash matters — LiteLLM 307-redirects)
+- [x] `prometheus/rules/llm.rules.yml`: three groups (`llm-gateway`, `vllm-engine`, `gpu-hardware`) — request rate/by-user/success-rate, p50/p95/api-only latency, tokens/s (gen + prompt), queue depth, active batch size, power 30s moving average, FB-used fraction. All names verified against live `/metrics` output before writing.
+- [x] `prometheus` service: pinned `prom/prometheus:v3.1.0`, port 9090:9090, `--web.enable-lifecycle`, `--storage.tsdb.retention.time=7d`, bind-mounted config + named volume for TSDB, `wget /-/healthy` healthcheck
+- [x] `prometheus/README.md`: scrape walkthrough, per-job notes (esp. the LiteLLM trailing-slash quirk), metric-name discovery recipe, 8 PromQL recipes including per-tenant rate and the prefill/decode pair, troubleshooting matrix
+- [x] Smoke test: `:9090/targets` shows all six jobs UP (vllm, litellm, dcgm, node, cadvisor, prometheus)
 
 ### Grafana (plan §5.5)
-- [ ] Write `grafana/provisioning/datasources/datasources.yml` pointing at `http://prometheus:9090` (Prometheus datasource as default)
-- [ ] Write `grafana/provisioning/dashboards/dashboards.yml` pointing the Grafana provisioner at `/var/lib/grafana/dashboards`
-- [ ] Build `grafana/dashboards/01-llm-overview.json`: panels for request rate (LiteLLM), p50/p95 latency (recording rule), tokens/s (vLLM gen tokens rate), queue depth (`vllm:num_requests_waiting`), KV cache % (`vllm:gpu_cache_usage_perc`) — each panel has a description set so it's annotated in-UI
-- [ ] Build `grafana/dashboards/02-gpu-saturation.json`: SM_ACTIVE, FB memory used, power, temp, all on a shared time axis with `llm:request_latency_p95_seconds` overlaid on a right Y axis
-- [ ] Add `grafana` service to compose: `grafana/grafana:vX.Y` pinned, port `3000:3000`, anonymous read enabled, mounts for `./grafana/provisioning:/etc/grafana/provisioning` and `./grafana/dashboards:/var/lib/grafana/dashboards`, volume for `grafana-data`
-- [ ] Write `grafana/README.md`: how provisioning is wired, panel-by-panel notes for each dashboard ("what this measures, what 'good' looks like, what changes under load"), how to add a new panel and persist it back to JSON
-- [ ] Smoke test: open `http://localhost:3000`, both dashboards present and show live data while a `curl` against LiteLLM runs in a loop
+- [x] `grafana/provisioning/datasources/datasources.yml`: Prometheus default with stable `uid: prometheus`, `editable: false`, `timeInterval: 5s` matching scrape interval
+- [x] `grafana/provisioning/dashboards/dashboards.yml`: file provider into `LLM Stack` folder, `updateIntervalSeconds: 30`, `allowUiUpdates: true`
+- [x] `grafana/dashboards/01-llm-overview.json`: 6 panels — request rate (with per-user overlay), p50/p95 latency (+ API-only), tokens/s (gen + prompt), queue+batch, KV cache gauge, prefix cache hit rate. Every panel has a `description`.
+- [x] `grafana/dashboards/02-gpu-saturation.json`: 5 panels — power (raw + 30s avg), temp, FB stacked, clocks, plus the headline correlation panel: GPU power (left axis) ↔ p95 latency (right axis) on a shared time axis
+- [x] `grafana` service: pinned `grafana/grafana:11.4.0`, port 3000:3000, anonymous read enabled, provisioning + dashboards bind-mounted read-only, `depends_on: prometheus healthy`, telemetry off
+- [x] `grafana/README.md`: provisioning explained, per-panel "what to watch" tables for both dashboards, edit-then-export workflow for persisting UI changes, smoke tests, troubleshooting matrix
+- [x] Smoke test: datasource provisioned (queryable), both dashboards visible in `LLM Stack` folder at `:3000`, panels populate against live traffic. Direct links: `/d/llm-overview/llm-overview`, `/d/gpu-saturation/gpu-saturation`.
+
+### Compose-wide validation (Phase 1.1)
+- [x] `docker compose config -q` parses clean
+- [x] All 9 services reach healthy: cadvisor, dcgm-exporter, grafana, langfuse, langfuse-db, litellm, node-exporter, prometheus, vllm-engine
 
 ---
 

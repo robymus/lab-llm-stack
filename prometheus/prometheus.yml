@@ -1,0 +1,87 @@
+# =============================================================================
+#  Prometheus scrape configuration
+# -----------------------------------------------------------------------------
+#  Scrapes the six (will be seven in Phase 1.2) /metrics endpoints in the
+#  llm-stack network and evaluates recording rules over the result.
+#
+#  Convention: every scrape target is reachable by service-name DNS inside
+#  the network — same names as in docker-compose.yaml. No localhost.
+# =============================================================================
+
+global:
+  # 5 s scrape — short enough to see prefill/decode bursts that last only
+  # a couple of seconds. Real prod would be 15-60 s; we're explicit-about
+  # cardinality and storage in a sandbox.
+  scrape_interval: 5s
+  # 15 s rule evaluation — derives recording rules at a slower cadence so
+  # we don't pay for evaluating expensive PromQL on every scrape.
+  evaluation_interval: 15s
+  # Labels Prometheus attaches to every series it ingests. Useful when
+  # federating multiple Prometheuses; harmless otherwise.
+  external_labels:
+    cluster: llm-stack
+    env: sandbox
+
+rule_files:
+  # Pre-compute a small set of high-traffic series (p95 latency, tokens/s,
+  # GPU power moving average) so dashboards don't recompute them per panel.
+  # See rules/llm.rules.yml for the definitions.
+  - /etc/prometheus/rules/llm.rules.yml
+
+scrape_configs:
+  # ---------------------------------------------------------------------
+  #  vLLM inference engine
+  # ---------------------------------------------------------------------
+  # Native Prometheus support — no exporter sidecar needed. Same port as
+  # the OpenAI API (:8000). Series are prefixed `vllm:` (note the colon).
+  - job_name: vllm
+    static_configs:
+      - targets: ["vllm-engine:8000"]
+        labels: { layer: inference }
+
+  # ---------------------------------------------------------------------
+  #  LiteLLM gateway
+  # ---------------------------------------------------------------------
+  # The Prometheus callback (`callbacks: ["prometheus"]` in config.yaml)
+  # exposes metrics at /metrics/ — note the TRAILING SLASH. Hitting
+  # /metrics returns a 307 redirect, which Prometheus follows but pays
+  # for on every scrape. Set the path explicitly.
+  - job_name: litellm
+    metrics_path: /metrics/
+    static_configs:
+      - targets: ["litellm:4000"]
+        labels: { layer: gateway }
+
+  # ---------------------------------------------------------------------
+  #  DCGM exporter (GPU telemetry)
+  # ---------------------------------------------------------------------
+  - job_name: dcgm
+    static_configs:
+      - targets: ["dcgm-exporter:9400"]
+        labels: { layer: hardware }
+
+  # ---------------------------------------------------------------------
+  #  node-exporter (host OS telemetry)
+  # ---------------------------------------------------------------------
+  - job_name: node
+    static_configs:
+      - targets: ["node-exporter:9100"]
+        labels: { layer: hardware }
+
+  # ---------------------------------------------------------------------
+  #  cAdvisor (per-container telemetry)
+  # ---------------------------------------------------------------------
+  - job_name: cadvisor
+    static_configs:
+      - targets: ["cadvisor:8080"]
+        labels: { layer: hardware }
+
+  # ---------------------------------------------------------------------
+  #  Prometheus itself
+  # ---------------------------------------------------------------------
+  # Scrape ourselves so we can plot scrape_duration_seconds and target
+  # health on the dashboard. Cheap, useful, traditional.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+        labels: { layer: meta }

@@ -1,0 +1,59 @@
+# =============================================================================
+#  DCGM exporter — custom metrics list
+# -----------------------------------------------------------------------------
+#  Trimmed from the upstream default (~80 fields) to the dozen we actually
+#  use in the sandbox dashboards. Format is positional:
+#
+#      DCGM_FI_<field>,  <type: gauge|counter|label>,  <free-form help text>
+#
+#  Lines starting with `#` are comments. Whitespace is significant only as a
+#  separator. The exporter prefixes everything with `DCGM_FI_` automatically,
+#  but we include it explicitly to make grepping easier.
+#
+#  Field categories:
+#    DEV_*    — basic device telemetry (power, temp, memory, clocks)
+#    PROF_*   — Data Center Profiling. Higher accuracy than DEV_GPU_UTIL but
+#               requires the DCGM profiling subsystem to be active. On
+#               consumer cards (4060) some PROF_* may report N/A; that's
+#               fine — we just don't plot them.
+#
+#  If a value never appears in /metrics output, it's either unsupported on
+#  this GPU or DCGM hasn't finished initialising. The dcgm/README.md
+#  troubleshooting section lists the usual suspects.
+# =============================================================================
+
+# --- Power / thermals -----------------------------------------------------
+DCGM_FI_DEV_POWER_USAGE,                    gauge, Current power draw in watts
+DCGM_FI_DEV_GPU_TEMP,                       gauge, GPU die temperature in degrees Celsius
+DCGM_FI_DEV_MEMORY_TEMP,                    gauge, GPU memory temperature in degrees Celsius (may be N/A on consumer cards)
+
+# --- Clocks ---------------------------------------------------------------
+DCGM_FI_DEV_SM_CLOCK,                       gauge, Streaming-multiprocessor clock in MHz
+DCGM_FI_DEV_MEM_CLOCK,                      gauge, Memory clock in MHz
+
+# --- Framebuffer (VRAM) memory --------------------------------------------
+# On an 8 GB 4060: USED + FREE should sum to ~8188 MiB.
+DCGM_FI_DEV_FB_USED,                        gauge, Frame-buffer memory used in MiB
+DCGM_FI_DEV_FB_FREE,                        gauge, Frame-buffer memory free in MiB
+
+# --- Utilisation ----------------------------------------------------------
+# DEV_GPU_UTIL is the nvidia-smi-style "GPU-Util". It only measures whether
+# *any* kernel was running, not how saturated the SMs are. Misleading for
+# LLM inference — keep it visible so you can see *why* it's misleading.
+DCGM_FI_DEV_GPU_UTIL,                       gauge, Coarse GPU utilisation (nvidia-smi style; misleading for LLMs)
+
+# --- DCP profiling metrics — UNAVAILABLE ON CONSUMER GPUs ----------------
+# The DCGM Data Center Profiling (DCP) module exposes the metrics below.
+# These are the *honest* saturation numbers — much better than DEV_GPU_UTIL.
+# BUT: the DCP module is gated to data-centre cards (H100, A100, L40, etc.)
+# On consumer Ada cards like the RTX 4060 the exporter logs:
+#     "Not collecting DCP metrics: This request is serviced by a module
+#      of DCGM that is not currently loaded"
+# and silently skips these fields. Left here, commented, so anyone running
+# the same compose on a data-centre GPU can uncomment them and immediately
+# get the better saturation panel.
+#
+# DCGM_FI_PROF_SM_ACTIVE,                   gauge, Fraction of time at least one warp is active on an SM (real GPU util)
+# DCGM_FI_PROF_SM_OCCUPANCY,                gauge, Fraction of resident warps over the SM maximum
+# DCGM_FI_PROF_PIPE_TENSOR_ACTIVE,          gauge, Fraction of time the tensor-core pipe is busy
+# DCGM_FI_PROF_DRAM_ACTIVE,                 gauge, Fraction of memory bandwidth in use

@@ -1,0 +1,136 @@
+{
+  "annotations": { "list": [] },
+  "description": "Gateway + engine view: request rate, latency, tokens, queue depth, KV cache.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Request rate (rps)",
+      "description": "Requests per second through LiteLLM, summed across all models and users. Comes from llm:request_rate recording rule (rate of litellm_proxy_total_requests_metric_total over 1m).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "llm:request_rate", "refId": "A", "legendFormat": "all", "datasource": { "type": "prometheus", "uid": "prometheus" } },
+        { "expr": "llm:request_rate_by_user", "refId": "B", "legendFormat": "user={{user}}", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Latency p50 / p95 (s)",
+      "description": "End-to-end gateway latency (LiteLLM perspective). The gap between p50 and p95 indicates whether latency is bimodal — typical for LLM serving when prefill bursts hit a busy decode loop.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "llm:request_latency_p50_seconds", "refId": "A", "legendFormat": "p50", "datasource": { "type": "prometheus", "uid": "prometheus" } },
+        { "expr": "llm:request_latency_p95_seconds", "refId": "B", "legendFormat": "p95", "datasource": { "type": "prometheus", "uid": "prometheus" } },
+        { "expr": "llm:api_latency_p95_seconds", "refId": "C", "legendFormat": "p95 (api only)", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 5 } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Tokens / second",
+      "description": "Generation (output) and prompt (input) token rates from vLLM. Output tokens/s is the headline throughput number; input tokens/s spikes during prefill of long prompts.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "llm:tokens_per_second", "refId": "A", "legendFormat": "generation (out)", "datasource": { "type": "prometheus", "uid": "prometheus" } },
+        { "expr": "llm:prompt_tokens_per_second", "refId": "B", "legendFormat": "prompt (in)", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Queue depth / active batch",
+      "description": "Active batch = requests currently in vLLM's running batch. Queue depth = requests waiting to be batched. Non-zero queue depth means you're saturating — batching is the right knob.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "targets": [
+        { "expr": "llm:active_batch_size", "refId": "A", "legendFormat": "running", "datasource": { "type": "prometheus", "uid": "prometheus" } },
+        { "expr": "llm:queue_depth", "refId": "B", "legendFormat": "waiting", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "id": 5,
+      "type": "gauge",
+      "title": "KV cache usage",
+      "description": "Fraction of the GPU KV cache currently filled. vLLM allocates this slab at startup (sized by --gpu-memory-utilization); 1.0 means you're cache-bound and new requests will queue.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 0, "y": 16, "w": 8, "h": 8 },
+      "targets": [
+        { "expr": "vllm:gpu_cache_usage_perc", "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.7 },
+              { "color": "red", "value": 0.9 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "showThresholdLabels": false, "showThresholdMarkers": true }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Prefix cache hit rate",
+      "description": "Fraction of prompt tokens that hit vLLM's prefix cache (--enable-prefix-caching). Repeated system prompts produce visible jumps — free perf when the cache catches.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "x": 8, "y": 16, "w": 16, "h": 8 },
+      "targets": [
+        { "expr": "vllm:gpu_prefix_cache_hit_rate", "refId": "A", "legendFormat": "hit rate", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "percentunit", "min": 0, "max": 1, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false }, "tooltip": { "mode": "single" } }
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 39,
+  "tags": ["llm-stack", "phase-1.1"],
+  "templating": { "list": [] },
+  "time": { "from": "now-15m", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "LLM Overview",
+  "uid": "llm-overview",
+  "version": 1,
+  "weekStart": ""
+}

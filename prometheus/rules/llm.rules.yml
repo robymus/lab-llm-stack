@@ -1,0 +1,92 @@
+# =============================================================================
+#  Recording rules for the LLM sandbox
+# -----------------------------------------------------------------------------
+#  Pre-computes the series the dashboards plot most. Names follow the
+#  Prometheus convention: `<level>:<metric>:<aggregation>` where
+#    level = the grouping ("llm" = LLM stack-wide, "gpu" = the GPU).
+#  Each rule's `expr` was authored against the actual /metrics output of the
+#  containers at compose-time — see prometheus/README.md for how to verify
+#  these still match if you bump image versions.
+# =============================================================================
+
+groups:
+  # -------------------------------------------------------------------------
+  #  LLM-level: gateway request volume and latency
+  # -------------------------------------------------------------------------
+  - name: llm-gateway
+    interval: 15s
+    rules:
+      # Requests per second, summed across labels. The base counter is
+      # the LiteLLM proxy's total request counter.
+      - record: llm:request_rate
+        expr: sum(rate(litellm_proxy_total_requests_metric_total[1m]))
+
+      # Per-user request rate — proves the X-User-Id propagation worked.
+      # Useful in Phase 1.2 when Streamlit sends X-User-Id per session.
+      - record: llm:request_rate_by_user
+        expr: sum by (user) (rate(litellm_proxy_total_requests_metric_total[1m]))
+
+      # Per-model success rate (status_code starts with "2").
+      - record: llm:success_rate
+        expr: |
+          sum by (requested_model) (rate(litellm_proxy_total_requests_metric_total{status_code=~"2.."}[1m]))
+            /
+          sum by (requested_model) (rate(litellm_proxy_total_requests_metric_total[1m]))
+
+      # End-to-end p95 latency at the gateway — what callers experience.
+      # `histogram_quantile` over the rate of the histogram's bucket series.
+      - record: llm:request_latency_p95_seconds
+        expr: histogram_quantile(0.95, sum by (le) (rate(litellm_request_total_latency_metric_bucket[2m])))
+
+      # p50 for comparison; the gap between p50 and p95 tells you whether
+      # latency is bimodal (prefill-heavy bursts) or just slow on average.
+      - record: llm:request_latency_p50_seconds
+        expr: histogram_quantile(0.50, sum by (le) (rate(litellm_request_total_latency_metric_bucket[2m])))
+
+      # Just the LLM-call portion — excludes LiteLLM's own overhead. If
+      # p95(api) is close to p95(request), LiteLLM is not the bottleneck.
+      - record: llm:api_latency_p95_seconds
+        expr: histogram_quantile(0.95, sum by (le) (rate(litellm_llm_api_latency_metric_bucket[2m])))
+
+  # -------------------------------------------------------------------------
+  #  vLLM engine: throughput and saturation
+  # -------------------------------------------------------------------------
+  - name: vllm-engine
+    interval: 15s
+    rules:
+      # Output tokens per second across all requests — the headline number.
+      - record: llm:tokens_per_second
+        expr: sum(rate(vllm:generation_tokens_total[30s]))
+
+      # Input (prompt) tokens per second — useful when prompts are huge
+      # and prefill dominates power use.
+      - record: llm:prompt_tokens_per_second
+        expr: sum(rate(vllm:prompt_tokens_total[30s]))
+
+      # Queue depth as a single scalar — non-zero means saturating.
+      - record: llm:queue_depth
+        expr: sum(vllm:num_requests_waiting)
+
+      # Active-batch size. Reading this alongside queue_depth tells you
+      # whether batching is keeping up with arrivals.
+      - record: llm:active_batch_size
+        expr: sum(vllm:num_requests_running)
+
+  # -------------------------------------------------------------------------
+  #  GPU hardware: a few useful moving averages
+  # -------------------------------------------------------------------------
+  - name: gpu-hardware
+    interval: 15s
+    rules:
+      # 30s power moving average so the dashboard's power panel doesn't
+      # whip around with every 5s scrape. Bursty workloads show up as
+      # the moving average lagging the raw series — visible in dashboards.
+      - record: gpu:power_watts_avg30s
+        expr: avg_over_time(DCGM_FI_DEV_POWER_USAGE[30s])
+
+      # Convenience: framebuffer usage as a fraction. Original is MiB.
+      - record: gpu:fb_used_fraction
+        expr: |
+          DCGM_FI_DEV_FB_USED
+            /
+          (DCGM_FI_DEV_FB_USED + DCGM_FI_DEV_FB_FREE)
