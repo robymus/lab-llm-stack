@@ -7,15 +7,20 @@
 
 ## Current state
 
-**Phases 1.0 + 1.1 + 1.2 + 1.3 implemented.** Eleven services healthy
-under `docker compose up -d`: vLLM, LiteLLM, Langfuse (web + Postgres),
-DCGM exporter, node-exporter, cAdvisor, Prometheus, Grafana,
+**Phases 1.0 + 1.1 + 1.2 + 1.3 + 1.4 implemented.** Eleven services
+healthy under `docker compose up -d`: vLLM, LiteLLM, Langfuse (web +
+Postgres), DCGM exporter, node-exporter, cAdvisor, Prometheus, Grafana,
 mock-services, agent app. Streamlit chat → LangChain agent (5 tools)
 → mock-services produces trace trees in Langfuse with chain/llm/tool
-spans, grouped by user_id. Phase 1.3 adds the **trunks-based load
+spans, grouped by user_id. Phase 1.3 added the **trunks-based load
 tester** (`scripts/load.sh` with 7 profiles) and four ordered
-walkthrough docs that take a new reader from cold to "I understand the
-prefill/decode burstiness pattern."
+walkthrough docs. Phase 1.4 adds **CI + polish**:
+GitHub Actions workflow (yamllint, jq JSON validate, hadolint,
+`docker compose config -q`, ruff check + format, pytest), pre-commit
+config that mirrors CI, pyproject.toml/`.yamllint.yml`/`.hadolint.yaml`
+lint configs, unit tests under `app/tests/` (respx-mocked) and
+`mock-services/tests/` (FastAPI `TestClient`), the `VERSIONS.md` audit
+trail, and a reconciled `.env.example`.
 
 Deviations from the plan along the way (documented inline + in PLAN/TODO):
 - Langfuse v2 doesn't speak OTLP → Langfuse-native LangChain callback
@@ -25,20 +30,26 @@ Deviations from the plan along the way (documented inline + in PLAN/TODO):
 - Load tester uses **trunks** (Rust) not vegeta — `cargo install trunks`.
   Saturation profile is a single 90 s linear ramp instead of three
   discrete stages.
-
-Phase 1.4 (CI + polish) is pending.
+- LiteLLM `main-stable` is pinned by **manifest digest** (no clean
+  semver tags published for that channel) — see VERSIONS.md for the
+  bump procedure.
 
 ## Files by purpose
 
 ### Top-level
 | File | What it is |
 | ---- | ---------- |
-| [README.md](README.md) | Quickstart, smoke tests, repo layout, troubleshooting entry point |
+| [README.md](README.md) | Quickstart, smoke tests, dev workflow (CI mirror), repo layout, troubleshooting |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | The map: layers, request flow, Phase 2 swap point, reading order |
+| [VERSIONS.md](VERSIONS.md) | **Phase 1.4** — pinned image / action / dep audit trail with bump procedures |
 | [INITIAL-PLAN.md](INITIAL-PLAN.md) | The original brief from the user (kept for context) |
 | [docker-compose.yaml](docker-compose.yaml) | The wiring: networks, volumes, all services. Heavily commented. |
-| [.env.example](.env.example) | Template for `.env`. Every var phase-tagged and commented. |
+| [.env.example](.env.example) | Template for `.env`. Every var phase-tagged and commented. Reconciled in 1.4. |
 | [.gitignore](.gitignore) | Keeps `.env`, container-mounted state, and Python noise out of git |
+| [pyproject.toml](pyproject.toml) | **Phase 1.4** — ruff (lint + format) + pytest config |
+| [.yamllint.yml](.yamllint.yml) | **Phase 1.4** — YAML lint rules |
+| [.hadolint.yaml](.hadolint.yaml) | **Phase 1.4** — Dockerfile lint rules |
+| [.pre-commit-config.yaml](.pre-commit-config.yaml) | **Phase 1.4** — local mirror of CI lint stage |
 
 ### Planning artefacts
 | File | What it is |
@@ -49,7 +60,7 @@ Phase 1.4 (CI + polish) is pending.
 ### Scripts
 | File | What it does |
 | ---- | ------------ |
-| [scripts/preflight.sh](scripts/preflight.sh) | Verifies host has Docker, Compose, NVIDIA driver, container toolkit + registered runtime, ≥30 GB disk, and a `.env`. Computes `LANGFUSE_AUTH_B64` automatically when both Langfuse keys are populated. |
+| [scripts/preflight.sh](scripts/preflight.sh) | Verifies host has Docker, Compose, NVIDIA driver, container toolkit + registered runtime, ≥30 GB disk, and a `.env`. Reports whether the Langfuse public/secret keys are populated (Phase 1.2 readiness). |
 | [scripts/cleanup.sh](scripts/cleanup.sh) | Wipes the sandbox: stops containers, drops the network and all named volumes, removes pulled images. Destructive — confirms before acting. Flags: `-y`, `--keep-images`, `--keep-cache`, `--help`. |
 | [scripts/load.sh](scripts/load.sh) | Load tester driven by `trunks` (Rust port of vegeta — `cargo install trunks`). Seven profiles: smoke / short / decode-heavy / prefill-heavy / prefix-cache / mixed / saturation. Curated prompt sets (~40 prompts across categories) baked into the script; targets file + JSON payloads generated on the fly. Per-run binary + CSV under `/tmp/load-<profile>-<ts>/`. |
 
@@ -71,8 +82,8 @@ Phase 1.4 (CI + polish) is pending.
 ### Services (live in 1.2)
 | Folder | Implementation status | Key files |
 | ------ | --------------------- | --------- |
-| [mock-services/](mock-services/) | FastAPI app with 5 endpoints + `/metrics` + Prometheus scrape job + README | [mock-services/main.py](mock-services/main.py), [mock-services/Dockerfile](mock-services/Dockerfile), [mock-services/README.md](mock-services/README.md) |
-| [app/](app/) | Streamlit + LangChain agent + 5 tools + Langfuse `CallbackHandler` + README | [app/app.py](app/app.py), [app/agent.py](app/agent.py), [app/tools.py](app/tools.py), [app/Dockerfile](app/Dockerfile), [app/README.md](app/README.md) |
+| [mock-services/](mock-services/) | FastAPI app with 5 endpoints + `/metrics` + Prometheus scrape job + README + tests (1.4) | [mock-services/main.py](mock-services/main.py), [mock-services/Dockerfile](mock-services/Dockerfile), [mock-services/README.md](mock-services/README.md), [mock-services/tests/test_endpoints.py](mock-services/tests/test_endpoints.py), [mock-services/requirements-dev.txt](mock-services/requirements-dev.txt) |
+| [app/](app/) | Streamlit + LangChain agent + 5 tools + Langfuse `CallbackHandler` + README + tests (1.4) | [app/app.py](app/app.py), [app/agent.py](app/agent.py), [app/tools.py](app/tools.py), [app/Dockerfile](app/Dockerfile), [app/README.md](app/README.md), [app/tests/test_tools.py](app/tests/test_tools.py), [app/requirements-dev.txt](app/requirements-dev.txt) |
 
 ### Walkthrough docs (live in 1.3)
 | File | What it covers |
@@ -83,10 +94,10 @@ Phase 1.4 (CI + polish) is pending.
 | [docs/03-saturation-analysis.md](docs/03-saturation-analysis.md) | All 7 `scripts/load.sh` profiles explained, what to watch on which dashboard, how to read a trunks report |
 | [docs/04-trace-metric-correlation.md](docs/04-trace-metric-correlation.md) | The headline lesson — pick one trace, find its GPU power signature, see prefill vs decode burstiness |
 
-### Services (stubs for later phases)
-| Folder | Will arrive in | What's there now |
-| ------ | -------------- | ---------------- |
-| [.github/workflows/](.github/workflows/) | Phase 1.4 | Empty |
+### CI (live in 1.4)
+| File | What it is |
+| ---- | ---------- |
+| [.github/workflows/ci.yml](.github/workflows/ci.yml) | Three parallel jobs — `lint` (yamllint + jq + ruff), `dockerfiles` (hadolint + `docker compose config -q`), `tests` (matrixed pytest for both services). Every third-party action pinned to a commit SHA. |
 
 ## Compose service map (Phases 1.0 + 1.1 + 1.2)
 
@@ -173,7 +184,11 @@ Phase 1.2 adds:
 - `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY` — read by the app at startup to construct the Langfuse `CallbackHandler`
 - `OPENAI_API_BASE`, `MOCK_SERVICES_URL` — set in the app compose env, override the `.env` defaults (`.env` values are for running the app outside compose)
 
-`LANGFUSE_AUTH_B64` was added during Phase 1.0 for the originally-planned OTLP path; **no longer used** since Phase 1.2 switched to the native Langfuse SDK. Leave it in `.env` — preflight still computes it from the pair, and it'd come back if we ever upgrade to Langfuse v3.
+Phase 1.4 cleanup: `LANGFUSE_AUTH_B64` and `OTEL_EXPORTER_OTLP_ENDPOINT` were
+removed from `.env.example` and `preflight.sh`. Both were leftovers from the
+originally-planned OpenLLMetry/OTLP path that Langfuse v2 doesn't support;
+nothing in the codebase has read them since the Phase 1.2 switch to the
+native Langfuse SDK. They would return only if we ever upgrade to Langfuse v3.
 
 ## Conventions worth knowing
 
@@ -185,21 +200,22 @@ Phase 1.2 adds:
    service_healthy } }`. Removes startup races.
 3. **Named volumes for state.** Bind mounts only for *config* (read-only),
    not state. Keeps `git status` clean and dodges permission issues.
-4. **Pinned image tags.** Phase 1.4 does the final pin pass; until then
-   any tag change should come with a comment about what was retested.
+4. **Pinned image tags + actions + Python deps.** See [VERSIONS.md](VERSIONS.md).
+   Every bump is a deliberate commit with a one-line note in that file.
 5. **Secrets only via `.env`.** Compose loads it automatically; configs
    reference them via `${VAR}` or LiteLLM's `os.environ/VAR` syntax.
+6. **CI mirrors local checks.** `.pre-commit-config.yaml` runs the same
+   linters as the `lint` job in CI (ruff, yamllint, hadolint). Tests run
+   in CI only — both services have their own `requirements-dev.txt`.
 
 ## Known blockers / open items
 
 - **Langfuse API keys** must be created via the UI on first run, then
-  pasted into `.env`. Preflight's `.env` step auto-computes
-  `LANGFUSE_AUTH_B64` from the pair. *(Done on this host.)*
+  pasted into `.env`. Preflight reports whether they're set. *(Done on this host.)*
 - **DCP profiling (`DCGM_FI_PROF_*`)** is gated to data-centre GPUs and
   unavailable on the 4060. Dashboards use `DEV_GPU_UTIL` + `SM_CLOCK` as
   substitutes. To unlock the better saturation metrics on an A100/H100/L40,
   uncomment the four PROF_* lines in `dcgm/dcp-metrics-included.csv`.
-- **Image tags** are best-current-guess; Phase 1.4 re-verifies them.
 - **LiteLLM `/metrics` requires trailing slash** — handled in Prometheus
   scrape config; worth knowing if you ever poke it by hand.
 - **Langfuse v2 doesn't support OTLP/HTTP** — we use the native LangChain

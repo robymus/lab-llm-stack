@@ -1,0 +1,76 @@
+# =============================================================================
+#  pre-commit hooks — mirror CI's lint stage locally
+# -----------------------------------------------------------------------------
+#  Goal: lint failures surface during `git commit`, not on the PR. Anything
+#  here is also done in CI; nothing here is unique. To install:
+#
+#    pip install pre-commit
+#    pre-commit install
+#
+#  To run on every file (e.g. before the first commit on a fresh clone):
+#
+#    pre-commit run --all-files
+#
+#  Pinned `rev:` values mean the hook executable doesn't change underneath us.
+#  Bumping a hook = a single deliberate edit + rerun against the whole tree.
+# =============================================================================
+
+default_language_version:
+  python: python3.11
+
+repos:
+  # ---------------------------------------------------------------------------
+  #  ruff — Python linter + formatter (replaces black + isort + flake8)
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.9
+    hooks:
+      - id: ruff
+        # --fix on commit: auto-correct safe issues (import order, quotes,
+        # etc.), leaving only manual ones to surface as errors.
+        args: [--fix, --exit-non-zero-on-fix]
+        files: ^(app|mock-services)/
+      - id: ruff-format
+        files: ^(app|mock-services)/
+
+  # ---------------------------------------------------------------------------
+  #  yamllint — config-file consistency
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.35.1
+    hooks:
+      - id: yamllint
+        args: [--strict]
+
+  # ---------------------------------------------------------------------------
+  #  hadolint — Dockerfile linter
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/hadolint/hadolint
+    rev: v2.12.0
+    hooks:
+      - id: hadolint-docker
+        files: Dockerfile$
+
+  # ---------------------------------------------------------------------------
+  #  Generic hygiene hooks
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        # Markdown intentionally uses trailing 2-spaces for line breaks; skip.
+        exclude: \.md$
+      - id: end-of-file-fixer
+      - id: check-yaml
+        # Compose files use anchors / merge keys yamllint understands but the
+        # PyYAML loader chokes on; disable strict parsing here.
+        args: [--unsafe]
+      - id: check-json
+        # Skip dashboard JSONs — they're validated by `jq` in CI which is
+        # stricter (catches trailing commas etc.) than check-json's Python
+        # json module.
+        exclude: ^grafana/dashboards/.*\.json$
+      - id: check-added-large-files
+        args: [--maxkb=500]
+      - id: check-merge-conflict
+      - id: detect-private-key

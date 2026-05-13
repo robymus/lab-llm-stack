@@ -123,18 +123,14 @@ section ".env file"
 ENV_FILE="$(dirname "$0")/../.env"
 if [ -f "$ENV_FILE" ]; then
     ok ".env present"
-    # If both Langfuse keys are set, compute the base64 helper so the agent
-    # app can authenticate to OTLP without further intervention.
+    # Phase 1.2 readiness: the agent app needs both Langfuse keys to push
+    # traces. We just report; we don't try to derive anything else from them
+    # (the original LANGFUSE_AUTH_B64 helper was for an OTLP path that v2
+    # doesn't speak — dropped in Phase 1.4 along with that env var).
     pk="$(grep -E '^LANGFUSE_PUBLIC_KEY=' "$ENV_FILE" | cut -d= -f2-)"
     sk="$(grep -E '^LANGFUSE_SECRET_KEY=' "$ENV_FILE" | cut -d= -f2-)"
     if [ -n "$pk" ] && [ -n "$sk" ]; then
-        b64="$(printf '%s:%s' "$pk" "$sk" | base64 -w0)"
-        if grep -qE '^LANGFUSE_AUTH_B64=' "$ENV_FILE"; then
-            # In-place update (BSD/GNU sed compatible).
-            sed -i.bak -E "s|^LANGFUSE_AUTH_B64=.*|LANGFUSE_AUTH_B64=${b64}|" "$ENV_FILE"
-            rm -f "${ENV_FILE}.bak"
-        fi
-        ok "LANGFUSE_AUTH_B64 computed from public/secret key pair"
+        ok "Langfuse public/secret key pair set (Phase 1.2 ready)"
     else
         warn "LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY empty"
         hint "needed for Phase 1.2 — create them in the Langfuse UI after first start"

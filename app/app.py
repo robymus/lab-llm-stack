@@ -58,10 +58,7 @@ st.sidebar.markdown(
     "- `demonstrate an error by calling flaky_call with seed=a`"
 )
 st.sidebar.markdown("---")
-st.sidebar.markdown(
-    "[Langfuse UI](http://localhost:3001) · "
-    "[Grafana](http://localhost:3000)"
-)
+st.sidebar.markdown("[Langfuse UI](http://localhost:3001) · [Grafana](http://localhost:3000)")
 if st.sidebar.button("Reset chat"):
     st.session_state.messages = []
     st.rerun()

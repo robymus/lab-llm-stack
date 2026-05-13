@@ -153,9 +153,11 @@ services:
   #  one-line change here.
   # =========================================================================
   litellm:
-    # `main-stable` tracks the latest stable cut of the main branch. Phase
-    # 1.4 will replace this with a specific version once we've verified.
-    image: ghcr.io/berriai/litellm:main-stable
+    # LiteLLM doesn't publish clean semver tags for the `main-stable` channel,
+    # so we pin by manifest digest — fully reproducible, immune to the
+    # tag being moved upstream. See VERSIONS.md for the human-readable
+    # version (`main-stable` as of 2026-04-26) and the bump procedure.
+    image: ghcr.io/berriai/litellm@sha256:6c82d338a60e7b273ae46bf1d8db814d2856ae010f96c44eeadde574d3893f76
     container_name: litellm
     restart: unless-stopped
 
@@ -244,8 +246,10 @@ services:
   #  analytics.
   # =========================================================================
   langfuse:
-    # `:2` tracks the v2 major; pinned to a specific minor in Phase 1.4.
-    image: langfuse/langfuse:2
+    # Pinned to a specific v2.x minor — `:2` is a moving tag that would auto-
+    # adopt new minors and could subtly change behaviour mid-investigation.
+    # See VERSIONS.md for what was verified at this pin.
+    image: langfuse/langfuse:2.95.11
     container_name: langfuse
     restart: unless-stopped
 

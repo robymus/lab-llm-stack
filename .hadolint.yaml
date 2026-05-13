@@ -1,0 +1,36 @@
+# =============================================================================
+#  hadolint config — Dockerfile linter
+# -----------------------------------------------------------------------------
+#  Scope: app/Dockerfile, mock-services/Dockerfile. Both are simple Python
+#  slim-based images; we lean strict and document the few legitimate
+#  exceptions below.
+# =============================================================================
+
+# Treat any rule whose level we don't override as a warning at minimum.
+failure-threshold: warning
+
+ignored:
+  # DL3008 — "Pin versions in apt-get install". Our Dockerfiles do install
+  # `build-essential` un-pinned because it's transient (purged again right
+  # after pip install) and pinning gcc/g++ across Debian point releases adds
+  # churn without reproducibility benefit (the image's base tag already pins
+  # the Debian release).
+  - DL3008
+
+  # DL3013 — "Pin versions in pip". We DO pin every dependency in
+  # requirements.txt, but hadolint can't see that — it only inspects the
+  # Dockerfile, which uses `pip install -r requirements.txt`. Suppressed
+  # to avoid a false positive.
+  - DL3013
+
+  # DL3059 — "Multiple consecutive RUN instructions". The app/Dockerfile
+  # deliberately separates the build-essential install from its purge so the
+  # purge layer is small and the install layer cache-friendly. Combining
+  # them would defeat the cache. Acceptable trade-off.
+  - DL3059
+
+trustedRegistries:
+  - docker.io
+  - ghcr.io
+  - gcr.io
+  - nvcr.io

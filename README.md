@@ -5,13 +5,14 @@ observability plane wired up around it. Built for **learning** — every layer
 exists to teach one thing, and every config decision has a comment or a
 README explaining why.
 
-> Status: **Phases 1.0 → 1.3 implemented** — eleven services healthy under
+> Status: **Phases 1.0 → 1.4 implemented** — eleven services healthy under
 > `docker compose up -d`: vLLM (Qwen2.5-3B-AWQ) + LiteLLM gateway + Langfuse
 > traces + Prometheus/Grafana + DCGM/node/cAdvisor exporters + Streamlit
-> agent app + mock-services tool backend. Phase 1.4 (CI + polish) is next.
-> See [.plans/llm-sandbox-PLAN.md](.plans/llm-sandbox-PLAN.md) for the full
-> plan and [.plans/llm-sandbox-TODO.md](.plans/llm-sandbox-TODO.md) for
-> current progress.
+> agent app + mock-services tool backend. CI runs yamllint + JSON validate +
+> hadolint + compose-config + ruff + pytest on every push/PR. See
+> [.plans/llm-sandbox-PLAN.md](.plans/llm-sandbox-PLAN.md) for the full plan,
+> [.plans/llm-sandbox-TODO.md](.plans/llm-sandbox-TODO.md) for progress, and
+> [VERSIONS.md](VERSIONS.md) for the pinned-version audit trail.
 
 ## What it looks like
 
@@ -32,6 +33,8 @@ A **Langfuse trace** for a multi-tool chat turn from the Streamlit app — chain
 - [Architecture map](ARCHITECTURE.md) — what's running, how it fits, where to read first
 - [Plan](.plans/llm-sandbox-PLAN.md) — full design doc with trade-offs
 - [TODO](.plans/llm-sandbox-TODO.md) — phased task list
+- [VERSIONS.md](VERSIONS.md) — every pinned image, action, and dependency
+- [CODEBASE.md](CODEBASE.md) — top-down overview of every file
 
 ## Prerequisites
 
@@ -115,42 +118,101 @@ open http://localhost:3001
 
 ```
 llm-stack/
-├── ARCHITECTURE.md          # the map (read first)
-├── README.md                # this file
-├── INITIAL-PLAN.md          # original brief, kept for context
-├── docker-compose.yaml      # the wiring
-├── .env.example             # env-var template
+├── ARCHITECTURE.md           # the map (read first)
+├── README.md                 # this file
+├── CODEBASE.md               # top-down overview of every file
+├── VERSIONS.md               # pinned image / action / dep audit trail (Phase 1.4)
+├── INITIAL-PLAN.md           # original brief, kept for context
+├── docker-compose.yaml       # the wiring
+├── .env.example              # env-var template
+├── pyproject.toml            # repo-wide ruff + pytest config (Phase 1.4)
+├── .yamllint.yml             # YAML lint config (Phase 1.4)
+├── .hadolint.yaml            # Dockerfile lint config (Phase 1.4)
+├── .pre-commit-config.yaml   # local mirror of CI lint (Phase 1.4)
 ├── scripts/
-│   └── preflight.sh         # host-readiness checker
+│   └── preflight.sh          # host-readiness checker
 ├── .plans/
-│   ├── llm-sandbox-PLAN.md  # full design
-│   └── llm-sandbox-TODO.md  # phased task list
+│   ├── llm-sandbox-PLAN.md   # full design
+│   └── llm-sandbox-TODO.md   # phased task list
 │
-├── vllm/                    # Phase 1.0  — inference engine notes
-├── litellm/                 # Phase 1.0  — gateway config + notes
-├── langfuse/                # Phase 1.0  — trace store notes
+├── vllm/                     # Phase 1.0  — inference engine notes
+├── litellm/                  # Phase 1.0  — gateway config + notes
+├── langfuse/                 # Phase 1.0  — trace store notes
 │
-├── prometheus/              # Phase 1.1  — scrape config + recording rules
-├── grafana/                 # Phase 1.1  — provisioning + dashboards
-├── dcgm/                    # Phase 1.1  — GPU exporter config + notes
+├── prometheus/               # Phase 1.1  — scrape config + recording rules
+├── grafana/                  # Phase 1.1  — provisioning + dashboards
+├── dcgm/                     # Phase 1.1  — GPU exporter config + notes
 │
-├── app/                     # Phase 1.2  — Streamlit + LangChain agent
-├── mock-services/           # Phase 1.2  — FastAPI app the tools call
+├── app/                      # Phase 1.2  — Streamlit + LangChain agent
+│   ├── tests/                #             — pytest + respx (Phase 1.4)
+│   └── requirements-dev.txt  #             — test/lint deps (Phase 1.4)
+├── mock-services/            # Phase 1.2  — FastAPI app the tools call
+│   ├── tests/                #             — pytest + TestClient (Phase 1.4)
+│   └── requirements-dev.txt  #             — test/lint deps (Phase 1.4)
 │
-├── docs/                    # Phase 1.3  — ordered walkthroughs
-└── .github/workflows/       # Phase 1.4  — CI: lint, validate, test
+├── docs/                     # Phase 1.3  — ordered walkthroughs
+└── .github/workflows/ci.yml  # Phase 1.4  — CI: lint + dockerfiles + tests
 ```
 
 ## Conventions
 
 - **Image tags are pinned.** Bumps require a commit message explaining what
-  was retested. (Phase 1.4 does the final pinning pass.)
+  was retested. See [VERSIONS.md](VERSIONS.md) for the audit trail.
 - **Every service folder has a README** with the same shape: *What this is*,
   *Why it's here*, *Configuration walkthrough*, *Smoke tests*, *Where to
   look when it breaks*.
 - **State lives in named volumes**, not bind mounts. Survives `docker compose
   down`; cleared by `docker compose down -v`.
 - **Secrets only in `.env`.** Never inline in committed configs.
+
+## Development
+
+CI (`.github/workflows/ci.yml`) runs three parallel jobs on every push and PR:
+
+| Job | What it catches |
+| --- | --------------- |
+| `lint` | YAML syntax (yamllint), Grafana dashboard JSON parse (jq), Python lint + format (ruff) |
+| `dockerfiles` | Dockerfile smells (hadolint) and broken `docker-compose.yaml` references |
+| `tests` | `pytest` against both `app/tests/` and `mock-services/tests/` |
+
+To mirror the same checks locally before pushing:
+
+```bash
+# One-time setup
+pip install pre-commit
+pre-commit install                  # installs the git pre-commit hook
+pre-commit run --all-files          # run every hook against the whole tree
+
+# Or run individual tools directly
+ruff check app mock-services
+ruff format --check app mock-services
+yamllint .
+docker compose config -q
+hadolint app/Dockerfile mock-services/Dockerfile
+```
+
+### Running the test suites
+
+The two services have separate test trees and separate `requirements-dev.txt`
+files (test deps are NOT baked into the runtime images).
+
+```bash
+# Agent app
+python -m venv app/.venv && source app/.venv/bin/activate
+pip install -r app/requirements-dev.txt
+pytest app/tests -v
+deactivate
+
+# Mock services
+python -m venv mock-services/.venv && source mock-services/.venv/bin/activate
+pip install -r mock-services/requirements-dev.txt
+pytest mock-services/tests -v
+deactivate
+```
+
+Python version: **3.11** everywhere — Dockerfiles, CI, `pyproject.toml`'s
+`target-version`. Match that in your venv to keep behaviour consistent
+with what CI will see.
 
 ## Cleanup
 
@@ -172,10 +234,16 @@ afterwards to re-verify the host is still ready.
 ## Troubleshooting
 
 - `scripts/preflight.sh` is the first stop — it catches missing toolkit,
-  wrong runtime, low disk.
+  wrong runtime, low disk, missing Langfuse keys.
 - `docker compose ps` shows health state. If a service is stuck "starting",
-  give vLLM a minute and watch its logs.
+  give vLLM a minute and watch its logs (model download is slow first time).
 - Per-service "Where to look when it breaks" sections in each README cover
-  the symptoms specific to that layer.
+  the symptoms specific to that layer:
+  [vllm](vllm/README.md), [litellm](litellm/README.md), [langfuse](langfuse/README.md),
+  [prometheus](prometheus/README.md), [grafana](grafana/README.md),
+  [dcgm](dcgm/README.md), [app](app/README.md), [mock-services](mock-services/README.md).
+- CI failed but works locally? Re-check the Python version (CI uses 3.11)
+  and that you ran `pre-commit run --all-files` against a clean working
+  tree.
 - Stuck in a weird state? `./scripts/cleanup.sh` followed by
   `./scripts/preflight.sh && docker compose up -d` resets to a clean slate.

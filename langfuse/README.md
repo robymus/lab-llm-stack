@@ -74,31 +74,25 @@ config for v2 — it's a one-time UI walkthrough:
    LANGFUSE_PUBLIC_KEY=pk-lf-...
    LANGFUSE_SECRET_KEY=sk-lf-...
    ```
-7. Re-run `scripts/preflight.sh` — it computes `LANGFUSE_AUTH_B64` from the
-   pair automatically.
+7. Re-run `scripts/preflight.sh` — it reports whether both keys are populated.
 
-The agent app (Phase 1.2) reads `LANGFUSE_AUTH_B64` and sends it as the
-`Authorization: Basic …` header on OTLP requests.
+The agent app reads these two keys directly via the Langfuse SDK (see
+`app/agent.py`) and pushes traces through the SDK, not OTLP.
 
-## OTLP endpoint
+## Why not OTLP?
 
-Phase 1.2's `Traceloop.init(...)` will use:
+The original plan called for OpenLLMetry → OTLP → Langfuse. That works
+against Langfuse **v3**, but v3 requires ClickHouse + Redis + Minio in
+addition to Postgres — six containers instead of two. Phase 1.0 deliberately
+chose v2 to keep the stack small; the price is that v2's API server doesn't
+expose an OTLP endpoint, so Phase 1.2 swapped to the SDK's native
+`langfuse.callback.CallbackHandler`. The trace tree shown in the UI is
+identical either way — only the wire protocol differs.
 
-```
-http://langfuse:3000/api/public/otel
-```
-
-(when running inside compose), or:
-
-```
-http://localhost:3001/api/public/otel
-```
-
-(when running the app outside compose for local debugging).
-
-The protocol is standard OTLP/HTTP. Langfuse maps OTel span attributes onto
-its own data model — `gen_ai.*` attributes (the OpenLLMetry-emitted ones)
-turn into the rich LLM-call view; everything else becomes a generic span.
+If we ever upgrade to v3, the OTLP path becomes available again and we can
+reinstate `traceloop-sdk`. The base URL it would point at would be
+`http://langfuse:3000/api/public/otel` (inside compose) or
+`http://localhost:3001/api/public/otel` (host shell).
 
 ## Smoke tests
 
@@ -118,8 +112,8 @@ curl -s -o /dev/null -w "%{http_code}\n" http://localhost:3001
 | ------- | ------------ | ------------- |
 | Web app crashes on first start with "no database" | Postgres not healthy yet | `docker compose ps`; wait, then restart langfuse |
 | "JWT_SESSION_ERROR" in logs | `NEXTAUTH_SECRET` changed between starts | Pick one, keep it stable, or `docker compose down -v` to clear sessions |
-| OTLP requests return 401 | Wrong `LANGFUSE_AUTH_B64` | Check it's `base64("$PK:$SK")` (preflight computes it for you) |
-| Traces sent but never appear | Wrong endpoint path | Must end with `/api/public/otel` — NOT `/api/public/otel/v1/traces` (Traceloop appends that itself) |
+| SDK ingestion returns 401 | Wrong `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` pair | Re-copy from the Langfuse UI's Project Settings → API Keys; restart the `app` service |
+| Traces sent but never appear | Public/secret key mismatch (a stale public against a fresh secret, for example) | Wipe both, recreate the pair, redeploy |
 | UI very slow | First-load NextJS compile | Wait 30s; it caches |
 
 ## Why not v3?

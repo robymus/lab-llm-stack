@@ -35,26 +35,42 @@ app = FastAPI(
 # at once.
 
 WEATHER = {
-    "london":   {"summary": "Overcast, 15 °C, 80% chance of rain. Bring an umbrella."},
-    "paris":    {"summary": "Sunny, 22 °C. Light wind from the west."},
-    "tokyo":    {"summary": "Hot and humid, 31 °C. Thunderstorms expected this evening."},
+    "london": {"summary": "Overcast, 15 °C, 80% chance of rain. Bring an umbrella."},
+    "paris": {"summary": "Sunny, 22 °C. Light wind from the west."},
+    "tokyo": {"summary": "Hot and humid, 31 °C. Thunderstorms expected this evening."},
     "new york": {"summary": "Clear, 18 °C. Light breeze."},
-    "berlin":   {"summary": "Cool and cloudy, 14 °C. Drizzle on and off."},
-    "sydney":   {"summary": "Mild, 19 °C. Partly cloudy."},
+    "berlin": {"summary": "Cool and cloudy, 14 °C. Drizzle on and off."},
+    "sydney": {"summary": "Mild, 19 °C. Partly cloudy."},
 }
 
 NEWS = {
-    "ai":      ["GPT-5 launches with multimodal abilities", "EU finalizes AI Act enforcement rules", "Open-source Llama 4 sees one million downloads"],
-    "tech":    ["Major AWS region outage resolved after 4 hours", "Quantum-chip announcement from IBM", "Apple unveils M5-class accelerators"],
-    "stocks":  ["Markets rally on Fed pivot signal", "Tech earnings beat estimates broadly", "Bond-yield curve normalizes"],
-    "weather": ["Hurricane season forecast updated", "Record warmth across Antarctic peninsula", "Polar vortex disrupts midwest grid"],
+    "ai": [
+        "GPT-5 launches with multimodal abilities",
+        "EU finalizes AI Act enforcement rules",
+        "Open-source Llama 4 sees one million downloads",
+    ],
+    "tech": [
+        "Major AWS region outage resolved after 4 hours",
+        "Quantum-chip announcement from IBM",
+        "Apple unveils M5-class accelerators",
+    ],
+    "stocks": [
+        "Markets rally on Fed pivot signal",
+        "Tech earnings beat estimates broadly",
+        "Bond-yield curve normalizes",
+    ],
+    "weather": [
+        "Hurricane season forecast updated",
+        "Record warmth across Antarctic peninsula",
+        "Polar vortex disrupts midwest grid",
+    ],
 }
 
 STOCKS = {
-    "AAPL":  {"price": 234.56, "change_pct": 1.23},
-    "NVDA":  {"price": 1023.45, "change_pct": -2.34},
-    "TSLA":  {"price": 189.12, "change_pct": 5.67},
-    "MSFT":  {"price": 412.89, "change_pct": 0.45},
+    "AAPL": {"price": 234.56, "change_pct": 1.23},
+    "NVDA": {"price": 1023.45, "change_pct": -2.34},
+    "TSLA": {"price": 189.12, "change_pct": 5.67},
+    "MSFT": {"price": 412.89, "change_pct": 0.45},
     "GOOGL": {"price": 178.34, "change_pct": -0.89},
 }
 
@@ -75,6 +91,7 @@ DOCS = [
 # ---------------------------------------------------------------------------
 #  Endpoints
 # ---------------------------------------------------------------------------
+
 
 @app.get("/health", tags=["meta"])
 def health():

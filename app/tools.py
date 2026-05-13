@@ -30,6 +30,7 @@ _client = httpx.Client(base_url=_BASE_URL, timeout=5.0)
 # The @tool decorator turns a plain function into a LangChain Tool, using
 # the docstring as `description`. Argument types come from type hints.
 
+
 @tool
 def get_current_weather(city: str) -> str:
     """Get the current weather summary for a city. Useful for travel and

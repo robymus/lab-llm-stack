@@ -1,0 +1,87 @@
+# =============================================================================
+#  Repo-wide Python tooling config
+# -----------------------------------------------------------------------------
+#  Scope: every Python file under app/ and mock-services/ — the only Python in
+#  the repo. We do NOT declare a buildable package here; this file exists
+#  solely to host shared ruff + pytest config so the two services agree on
+#  formatting/linting rules and we don't drift.
+# =============================================================================
+
+[tool.ruff]
+# Python version the Dockerfiles install. Keep CI's matrix in sync with this.
+target-version = "py311"
+
+# 120 chars: 80 felt cramped given the explanatory inline comments we use, and
+# 120 keeps the long data-table lines in mock-services/main.py readable without
+# forcing per-item line breaks.
+line-length = 120
+
+# Scan both service trees explicitly. Avoids accidentally linting third-party
+# files inside .venv/ or hf-cache/ when running from the repo root.
+src = ["app", "mock-services"]
+extend-exclude = [
+    ".venv",
+    "venv",
+    "hf-cache",
+    "langfuse/data",
+    "prometheus/data",
+    "grafana/data",
+]
+
+[tool.ruff.lint]
+# Enabled rule families:
+#   E, W  — pycodestyle errors/warnings (PEP 8 basics)
+#   F     — Pyflakes (undefined names, unused imports, etc.)
+#   I     — isort (import ordering / grouping)
+#   B     — flake8-bugbear (common gotchas: mutable defaults, broad except, ...)
+#   UP    — pyupgrade (modernise syntax for the target Python)
+#   N     — pep8-naming (class CamelCase, function snake_case)
+#   SIM   — flake8-simplify (collapse needless if/else patterns)
+#   RUF   — ruff's own opinionated rules
+select = ["E", "W", "F", "I", "B", "UP", "N", "SIM", "RUF"]
+
+ignore = [
+    # E501: line too long — handled by the formatter; ruff format wraps where
+    # it can and leaves the rest. We don't want lint failures for the cases
+    # ruff format deliberately left long (mostly: long string literals).
+    "E501",
+    # B008: function-call-in-default-arg — FastAPI's Depends(...) idiom relies
+    # on this; not worth a per-line noqa.
+    "B008",
+    # RUF012: mutable class attributes — false positives on Pydantic-style
+    # field defaults; we'd rather opt into per-class checking.
+    "RUF012",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Test files are allowed:
+#   - unused asserts in setup/teardown (B011)
+#   - implicit-string-concat (ISC001) which clashes with assert messages
+"**/tests/**/*.py" = ["B011"]
+# mock-services/main.py is mostly hand-curated data tables; ignore long-line
+# warnings on the data rows. (E501 is already globally ignored above; this
+# block is kept as documentation of intent.)
+"mock-services/main.py" = []
+
+[tool.ruff.format]
+# Default settings: double quotes, trailing commas on multi-line, line-respecting
+# wrapping. Match Black's behaviour exactly so we never have to argue about it.
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = true
+
+[tool.pytest.ini_options]
+# Discover tests under either service's tests/ folder.
+testpaths = ["app/tests", "mock-services/tests"]
+# Make imports work without each service needing its own __init__.py — tests
+# import module-level names directly from `tools`, `main`, etc.
+pythonpath = ["app", "mock-services"]
+# Quieter output by default; CI can flip with -v.
+addopts = "-ra -q --strict-markers --strict-config"
+# Treat warnings as errors so flaky-deprecation surfaces in CI, not prod.
+filterwarnings = [
+    "error",
+    # Known-noisy upstream warnings that aren't our bug — narrow as needed.
+    "ignore::DeprecationWarning:pydantic.*",
+    "ignore::DeprecationWarning:httpx.*",
+]

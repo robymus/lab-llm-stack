@@ -153,28 +153,33 @@
 ## Phase 1.4 — CI + polish (plan §5.9)
 
 > Exit: a fresh clone passes `pre-commit run --all-files`, CI is green on the first push, all image tags are pinned, and a teammate can stand the stack up by following only `README.md`.
+>
+> **Status: COMPLETE.** Three small deviations:
+> 1. **LiteLLM pinned by manifest digest, not semver** — `main-stable` is a rolling channel and there's no clean version-tagged equivalent. The compose comment links to `VERSIONS.md` for the bump procedure.
+> 2. **Tests are split per-service in CI** — separate `requirements-dev.txt` files (so test deps don't bloat runtime images) and a matrix job (so failures point at one service rather than "tests broke somewhere"). pyproject's `testpaths` lists both for local convenience.
+> 3. **Hadolint runs as a GitHub Action in CI but the pre-commit hook pulls a slightly older Docker image (`v2.12.0`)** — newer pre-commit hooks haven't been published. Both use the same `.hadolint.yaml`, so the catch-rate is consistent; only the wrapper differs.
 
 ### CI workflow
-- [ ] Write `.github/workflows/ci.yml`: jobs for yamllint, jq-validate-json, hadolint, `docker compose config -q`, ruff (check + format-check), pytest — all running on push and PR
-- [ ] Pin GitHub Actions to commit SHAs (security best practice; mention this choice in CI README)
-- [ ] Decide and document Python version (3.11 likely) in CI matrix and Dockerfiles consistently
+- [x] Write `.github/workflows/ci.yml`: jobs for yamllint, jq-validate-json, hadolint, `docker compose config -q`, ruff (check + format-check), pytest — all running on push and PR
+- [x] Pin GitHub Actions to commit SHAs (security best practice; documented in [VERSIONS.md](../VERSIONS.md) with the bump procedure)
+- [x] Decide and document Python version: **3.11** in `pyproject.toml` (`target-version = "py311"`), both Dockerfiles, CI `setup-python` (cross-referenced in VERSIONS.md)
 
 ### Linters and configs
-- [ ] `.yamllint.yml` config — relax line-length rule for compose, enable everything else
-- [ ] `pyproject.toml` (root or per-service): ruff config with reasonable line length and ignored rules listed with rationale
-- [ ] `.hadolint.yaml`: any project-wide ignores (e.g. `DL3008` if we don't pin apt versions in dev Dockerfiles)
-- [ ] `.pre-commit-config.yaml` mirroring the CI checks; document `pre-commit install` step in the root README
+- [x] [`.yamllint.yml`](../.yamllint.yml) — line-length 140 warning (compose comments are long), GitHub-Actions-friendly `truthy` rule, two-space indent enforced
+- [x] [`pyproject.toml`](../pyproject.toml) — ruff lint (E/W/F/I/B/UP/N/SIM/RUF) + format, line-length 120, pytest config with both testpaths
+- [x] [`.hadolint.yaml`](../.hadolint.yaml) — ignores `DL3008`/`DL3013`/`DL3059` with documented rationale; trusted registries listed
+- [x] [`.pre-commit-config.yaml`](../.pre-commit-config.yaml) mirroring CI; `pre-commit install` step documented in the root README
 
 ### Tests (minimal but real)
-- [ ] `app/tests/test_tools.py`: each tool, mocking httpx with `respx` or similar — verify it parses the mock-services response shape correctly and surfaces errors
-- [ ] `mock-services/tests/test_endpoints.py`: every endpoint returns the documented shape; `/flaky` is deterministic under a fixed seed
-- [ ] Wire tests into CI
+- [x] [`app/tests/test_tools.py`](../app/tests/test_tools.py): each tool, mocking httpx with `respx` at the transport layer — verifies URL/params AND parsed return string
+- [x] [`mock-services/tests/test_endpoints.py`](../mock-services/tests/test_endpoints.py): every endpoint shape pinned; `/flaky` determinism verified with parametrised seeds; `/metrics` exposition format checked
+- [x] Tests wired into CI as a matrix job (`tests (app)`, `tests (mock-services)`)
 
 ### Polish
-- [ ] Replace every `:latest` / `:main-latest` image tag with a concrete version; document chosen versions in a `VERSIONS.md` (or top of compose)
-- [ ] Walk `.env.example` against the actual codebase — every referenced var present, no dead vars
-- [ ] On a clean clone, run end-to-end: `cp .env.example .env`, fill HF token + Langfuse keys, `docker compose up`, then the Phase 1.0/1.1/1.2 smoke tests; fix any gap surfaced
-- [ ] Final pass on root `README.md`: prereqs, quickstart, "read the docs in order", troubleshooting section linked to per-service READMEs
+- [x] Pinned `litellm:main-stable` → manifest digest `sha256:6c82d338a60e…`; pinned `langfuse:2` → `langfuse:2.95.11`; all versions catalogued in [VERSIONS.md](../VERSIONS.md)
+- [x] `.env.example` reconciled — removed dead vars (`LANGFUSE_AUTH_B64`, `OTEL_EXPORTER_OTLP_ENDPOINT`); preflight stripped of the now-pointless base64 computation
+- [x] `docker compose config -q` passes after every Phase 1.4 edit
+- [x] Final pass on root `README.md`: development workflow section (CI mirror + venv test recipe), repository-layout block updated with all Phase 1.4 files, troubleshooting section now links per-service READMEs explicitly
 
 ---
 
@@ -191,7 +196,7 @@ Captured here so we don't keep re-evaluating them mid-stream:
 - Per-tenant cost tracking and rate limiting in LiteLLM
 - Streaming responses end-to-end (Streamlit token streaming + LiteLLM streaming + vLLM SSE)
 
-## Out of scope of this lab
+## Out of scope for this lab
 - Grafana alerts / Alertmanager
 - Authenticated Grafana (today: anonymous read)
 

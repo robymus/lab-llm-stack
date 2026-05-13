@@ -24,14 +24,13 @@ the same; only the inside of `Agent` changes.
 
 import os
 
+from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate
-from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain_openai import ChatOpenAI
 from langfuse.callback import CallbackHandler
 
 from tools import ALL_TOOLS
-
 
 # System prompt enumerates tools by name and gives selection hints.
 # Small models (Qwen-3B) need the explicit list to pick tools well.
@@ -49,12 +48,14 @@ then combine the results into a brief answer. Keep replies short — the user va
 brevity and is looking at the trace tree, not the prose.
 """
 
-_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", SYSTEM_PROMPT),
-    ("placeholder", "{chat_history}"),
-    ("user", "{input}"),
-    ("placeholder", "{agent_scratchpad}"),
-])
+_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        ("system", SYSTEM_PROMPT),
+        ("placeholder", "{chat_history}"),
+        ("user", "{input}"),
+        ("placeholder", "{agent_scratchpad}"),
+    ]
+)
 
 
 def _to_lc_history(messages: list[dict]) -> list:

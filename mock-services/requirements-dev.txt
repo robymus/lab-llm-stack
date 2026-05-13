@@ -1,0 +1,18 @@
+# =============================================================================
+#  Dev-only deps for mock-services
+# -----------------------------------------------------------------------------
+#  Same pattern as app/: runtime deps first, then test/lint extras.
+# =============================================================================
+
+-r requirements.txt
+
+# Test runner.
+pytest==8.3.3
+
+# FastAPI's TestClient lives in `starlette.testclient` and needs httpx to
+# drive it. Bundled here so the dev env has it without adding a runtime dep.
+httpx==0.27.2
+
+# Linter + formatter — pinned to match app/requirements-dev.txt so the two
+# services lint with the same version.
+ruff==0.15.9

@@ -1,0 +1,62 @@
+# =============================================================================
+#  yamllint config — keeps every YAML in the repo consistent
+# -----------------------------------------------------------------------------
+#  Scope: compose, Prometheus config + rules, Grafana provisioning, CI.
+#  All YAML in this repo is config — short, hand-edited, frequently reviewed —
+#  so we lean strict, with one carve-out: the compose file's inline comments
+#  can be long.
+# =============================================================================
+
+extends: default
+
+rules:
+  # Compose files are heavily annotated; some explanatory comments are
+  # legitimately wider than 80. Cap at 140 to catch accidental walls of
+  # text while leaving room for "why we set this flag" notes.
+  line-length:
+    max: 140
+    level: warning
+
+  # `truthy` defaults to flagging `on`/`off`/`yes`/`no` — GitHub Actions
+  # uses `on:` as a top-level key, which would always fail. Allow the
+  # common boolean spellings.
+  truthy:
+    allowed-values: ["true", "false", "on", "off"]
+    check-keys: false
+
+  # Two-space indent everywhere. Compose, Prometheus, and Grafana files
+  # already follow this; setting it explicitly catches drift.
+  indentation:
+    spaces: 2
+    indent-sequences: true
+
+  # Grafana dashboard JSONs are excluded from the YAML linter entirely —
+  # they're validated separately by `jq` in CI (see .github/workflows/ci.yml).
+  # No rule needed here; this is enforced by yamllint's path globbing in CI.
+
+  # Allow an arbitrary number of blank lines inside long config blocks
+  # (helps with the heavily-sectioned compose file).
+  empty-lines:
+    max: 2
+    max-end: 1
+
+  # Comments don't need a leading space after the `#` everywhere — some
+  # tools generate `#region`-style markers without one. Keep it required
+  # for human-authored comments though, so we set min-spaces-from-content
+  # to 1 but don't enforce a starting space.
+  comments:
+    min-spaces-from-content: 1
+    require-starts-with-space: false
+
+  # Documents don't need `---` at the top — compose and provisioning files
+  # are single-document; requiring the marker would just be noise.
+  document-start: disable
+
+ignore: |
+  .venv/
+  venv/
+  .git/
+  langfuse/data/
+  prometheus/data/
+  grafana/data/
+  grafana/dashboards/

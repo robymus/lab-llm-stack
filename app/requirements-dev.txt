@@ -1,0 +1,21 @@
+# =============================================================================
+#  Dev-only deps for the agent app
+# -----------------------------------------------------------------------------
+#  Installed in CI (and locally via `pip install -r requirements-dev.txt`)
+#  but NOT baked into the runtime image — they don't ship.
+# =============================================================================
+
+# Runtime deps first so dev installs work in a fresh venv with one command.
+-r requirements.txt
+
+# Test runner.
+pytest==8.3.3
+
+# Mocks httpx requests at the transport layer. Cleaner than monkey-patching:
+# tests assert on the actual outbound calls (method, URL, params) so a tool
+# silently changing endpoint path would fail the test.
+respx==0.21.1
+
+# Linter + formatter. Pinning the version keeps CI deterministic — bumping
+# ruff is a separate, deliberate change.
+ruff==0.15.9
