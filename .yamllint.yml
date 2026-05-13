@@ -11,10 +11,10 @@ extends: default
 
 rules:
   # Compose files are heavily annotated; some explanatory comments are
-  # legitimately wider than 80. Cap at 140 to catch accidental walls of
-  # text while leaving room for "why we set this flag" notes.
+  # legitimately wider than the default 80. 180 leaves room for "why we set
+  # this flag" lines without forcing awkward wraps mid-explanation.
   line-length:
-    max: 140
+    max: 180
     level: warning
 
   # `truthy` defaults to flagging `on`/`off`/`yes`/`no` — GitHub Actions
@@ -30,10 +30,6 @@ rules:
     spaces: 2
     indent-sequences: true
 
-  # Grafana dashboard JSONs are excluded from the YAML linter entirely —
-  # they're validated separately by `jq` in CI (see .github/workflows/ci.yml).
-  # No rule needed here; this is enforced by yamllint's path globbing in CI.
-
   # Allow an arbitrary number of blank lines inside long config blocks
   # (helps with the heavily-sectioned compose file).
   empty-lines:
@@ -41,12 +37,24 @@ rules:
     max-end: 1
 
   # Comments don't need a leading space after the `#` everywhere — some
-  # tools generate `#region`-style markers without one. Keep it required
-  # for human-authored comments though, so we set min-spaces-from-content
-  # to 1 but don't enforce a starting space.
+  # tools generate `#region`-style markers without one. Keep min-spaces
+  # away from preceding content at 1 (default is 2, which makes inline
+  # column-aligned comments harder to write).
   comments:
     min-spaces-from-content: 1
-    require-starts-with-space: false
+    require-starting-space: false
+
+  # Disabled: we intentionally use unaligned comments above block keys
+  # ("section headers") in heavily-annotated configs — yamllint flags
+  # those as misindented, but they're stylistically correct here.
+  comments-indentation: disable
+
+  # Flow-style mappings like `labels: { layer: hardware }` in prometheus.yml
+  # are short and readable; the inner spaces are part of the style. Allow
+  # up to one space inside braces (default rejects any).
+  braces:
+    max-spaces-inside: 1
+    min-spaces-inside: 0
 
   # Documents don't need `---` at the top — compose and provisioning files
   # are single-document; requiring the marker would just be noise.
