@@ -24,10 +24,60 @@ model_list:
       api_key: dummy                          # vLLM has no auth in our setup;
                                               # LiteLLM still requires *something*
 
+  # ---------------------------------------------------------------------------
+  #  qwen-chat-trt → Triton + TensorRT-LLM-served Qwen2.5-3B  (Phase 2.0)
+  # ---------------------------------------------------------------------------
+  #  The same logical model, served by a different engine. Targets the
+  #  `triton-server` compose service (profile `triton`), which is opt-in:
+  #
+  #      docker compose stop vllm-engine
+  #      docker compose --profile triton up -d triton-server
+  #
+  #  The `triton/` prefix invokes LiteLLM's native Triton provider, which:
+  #    - POSTs to `<api_base>/v2/models/ensemble/generate`
+  #    - translates {messages: [...]} → {text_input, max_tokens, ...}
+  #    - parses the `text_output` field back into a chat-completions response
+  #
+  #  No adapter code on our side. If LiteLLM's Triton wire format ever drifts
+  #  it would surface here, but the agent app doesn't notice.
+  #
+  #  Returns 503 until `scripts/build-trt-engine.sh` has been run AND
+  #  triton-server is up via the `triton` profile.
+  - model_name: qwen-chat-trt
+    litellm_params:
+      model: triton/ensemble                  # Triton-internal model name from inflight_batcher_llm/
+      # IMPORTANT: LiteLLM's Triton provider rejects a bare host — it
+      # introspects the URL path to pick between `/generate` (text-in/text-out)
+      # and `/infer` (tensor-in/tensor-out) APIs. We use the ensemble model's
+      # `/generate` endpoint, which is what the inflight_batcher_llm template
+      # exposes for chat-style I/O.
+      api_base: http://triton-server:8002/v2/models/ensemble/generate
+
+# ---------------------------------------------------------------------------
+#  Optional router rule (Phase 2.0 "swap" demo)
+# ---------------------------------------------------------------------------
+#  Uncomment to alias the public `qwen-chat` name to either backend without
+#  the agent app knowing — the headline Phase-2 lesson. With the alias
+#  enabled and `triton` profile up, every request to `qwen-chat` routes to
+#  the TRT-LLM engine, no app code touched.
+# router_settings:
+#   model_group_alias:
+#     qwen-chat: ["qwen-chat-trt", "qwen-chat"]   # first-listed wins on hit;
+#                                                  # second is the fall-through
+
 litellm_settings:
   # Surface a Prometheus-format /metrics endpoint at :4000/metrics.
   # This is what makes per-tenant request rate / latency observable.
   callbacks: ["prometheus"]
+
+  # Silently drop request parameters a backend doesn't support, instead
+  # of 400'ing the whole request. The motivating case (Phase 2.0): the
+  # agent + load.sh both send `temperature` on every request — vLLM
+  # accepts it, but LiteLLM's `triton/` provider rejects it because
+  # Triton's `/v2/models/.../generate` API uses different param names.
+  # With `drop_params: true`, the same client payload works against both
+  # backends — exactly the "one API, swap engines" promise of the seam.
+  drop_params: true
 
   # Pass through client-supplied headers (notably X-User-Id) to the backend.
   # The agent app sets X-User-Id per Streamlit session; without this flag the

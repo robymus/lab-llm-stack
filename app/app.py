@@ -14,7 +14,19 @@ st.set_page_config(
 )
 
 st.title("LLM Sandbox Chat")
-st.caption("Qwen2.5-3B via LiteLLM → vLLM. Tool calls hit mock-services. Traces land in Langfuse.")
+st.caption(
+    "Qwen2.5-3B via LiteLLM. Backend selectable in the sidebar (vLLM vs Triton+TRT-LLM). "
+    "Tool calls hit mock-services. Traces land in Langfuse, tagged with the chosen backend."
+)
+
+# Mapping from human-readable backend label → LiteLLM logical model name.
+# The keys appear in the sidebar dropdown; the values are what the gateway
+# routes on. Adding a new backend = adding one row here AND one entry in
+# litellm/config.yaml's model_list — nothing else in the app changes.
+BACKENDS = {
+    "vLLM (qwen-chat)": "qwen-chat",
+    "Triton + TRT-LLM (qwen-chat-trt)": "qwen-chat-trt",
+}
 
 
 # --- User-id capture -------------------------------------------------------
@@ -49,6 +61,23 @@ if not st.session_state.user_id:
 
 # --- Sidebar ---------------------------------------------------------------
 st.sidebar.markdown(f"**Session as:** `{st.session_state.user_id}`")
+
+# Backend picker. Default is the first key in BACKENDS (vLLM); the live
+# selection is kept in session state so it persists across reruns.
+# Changing this rebuilds the Agent (the cache key includes the model name).
+selected_backend_label = st.sidebar.selectbox(
+    "Backend",
+    options=list(BACKENDS.keys()),
+    key="backend_label",
+    help=(
+        "Switches which inference engine LiteLLM routes to. Triton requires "
+        "`docker compose --profile triton up -d triton-server` AND vLLM "
+        "stopped first (single 8 GB GPU)."
+    ),
+)
+selected_model = BACKENDS[selected_backend_label]
+st.sidebar.caption(f"Routing as `model={selected_model}`")
+
 st.sidebar.markdown(
     "**Try:**\n"
     "- `what's the weather in London?`\n"
@@ -70,19 +99,21 @@ if "messages" not in st.session_state:
 
 
 @st.cache_resource(show_spinner=False)
-def _executor_for(user_id: str):
-    """One Agent per user-id, cached for the session.
+def _executor_for(user_id: str, model_name: str):
+    """One Agent per (user-id, backend), cached for the session.
 
     `@st.cache_resource` survives reruns within the Streamlit process so
     we don't rebuild ChatOpenAI / AgentExecutor on every keystroke. OTLP
     tracing (Phase 2.2) is initialised at agent.py import time and
     doesn't need re-binding per user; the user_id is stamped per-call via
-    `Traceloop.set_association_properties`.
+    `Traceloop.set_association_properties`. Including `model_name` in the
+    cache key means flipping the sidebar dropdown rebuilds the Agent
+    against the new backend without restarting Streamlit.
     """
-    return agent.build_executor(user_id)
+    return agent.build_executor(user_id, model_name)
 
 
-executor = _executor_for(st.session_state.user_id)
+executor = _executor_for(st.session_state.user_id, selected_model)
 
 
 # Render past turns

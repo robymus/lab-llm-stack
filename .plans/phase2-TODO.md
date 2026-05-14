@@ -129,33 +129,54 @@
 > Exit: `curl :4000/v1/chat/completions -d '{"model":"qwen-chat-trt", ...}'` returns a Qwen completion from Triton; Streamlit chat still works with `model="qwen-chat"` (vLLM unchanged); new Grafana dashboard `03-trt-llm` shows TRT-LLM request latency curves under load; `triton/README.md` documents rebuild + GPU-specific binary + troubleshooting.
 
 ### Engine build (host-side, one-off)
-- [ ] Write `scripts/build-trt-engine.sh` calling `nvcr.io/nvidia/tritonserver:25.04-trtllm-python-py3` with `trtllm-build` flags: `--gemm_plugin float16`, `--gpt_attention_plugin float16`, `--max_batch_size 8`, `--max_input_len 3072`, `--max_output_len 1024`, `--use_paged_context_fmha enable` — output to `triton/engines/qwen-chat-trt/`
-- [ ] Add header to the script documenting: ~10–15 min build on Ada, ~3 GB output, engine is GPU-specific (SM 8.9 only, won't run anywhere else)
-- [ ] Add `triton/engines/` and `triton/model_repository/qwen-chat-trt/1/` to `.gitignore` (binary artefacts not committed)
-- [ ] Commit the `config.pbtxt` template under `triton/model_repository/qwen-chat-trt/` (template only — generated `.engine` stays untracked)
+- [x] Write `scripts/build-trt-engine.sh` — three-stage flow: (1) convert HF fp16 weights → TRT-LLM checkpoint with `convert_checkpoint.py --use_weight_only --weight_only_precision int4_awq --per_group`; (2) `trtllm-build` to a `.engine` with `--gemm_plugin float16`, `--gpt_attention_plugin float16`, `--max_batch_size 8`, `--max_input_len 3072`, `--max_seq_len 4096`, `--use_paged_context_fmha enable`; (3) assemble the inflight_batcher_llm model repository using upstream's `fill_template.py`. Refuses to run while `vllm-engine` is up (single 8 GB GPU)
+- [x] Header documents: ~10–15 min total build time on Ada, ~3 GB output, engine is GPU-specific (SM 8.9 only), and the exact follow-up `docker compose --profile triton up -d triton-server` step
+- [x] Add `triton/engines/` and `triton/model_repository/*/` (except `.gitkeep`) to `.gitignore`
+- [x] **Deviation from plan**: didn't commit a hand-written `config.pbtxt` template. The upstream `tensorrtllm_backend` image ships a proper `all_models/inflight_batcher_llm/` template (5 sub-models with placeholders); the build script copies that and runs `fill_template.py` to plug in engine path, tokenizer dir, batch size, KV-cache fraction. Hand-rolling that would duplicate ~500 lines of upstream config and would drift with TRT-LLM minor bumps
 
 ### Triton service
-- [ ] Add `triton-server` service (`nvcr.io/nvidia/tritonserver:25.04-trtllm-python-py3`): `command: [tritonserver, --model-repository=/models, --log-verbose=1, --http-port=8002, --grpc-port=8003, --metrics-port=8004]`, mount `./triton/model_repository:/models:ro`, expose `8002:8002` + `8004:8004`, GPU reservation, `/v2/health/ready` healthcheck with `start_period: 90s`
-- [ ] Add the plan's "due to 8 GB GPU constraint, commenting vLLM out is fine" note inline in compose (so the reader sees it next to both services)
+- [x] Add `triton-server` service (`nvcr.io/nvidia/tritonserver:25.04-trtllm-python-py3`): `command: [tritonserver, --model-repository=/models, --log-verbose=1, --http-port=8002, --grpc-port=8003, --metrics-port=8004]`, mount `./triton/model_repository:/models:ro`, expose `8002:8002` + `8004:8004`, GPU reservation, `shm_size: 1gb`, `/v2/health/ready` healthcheck with `start_period: 120s` (the ensemble's 5 sub-models take a moment)
+- [x] **Used compose `profiles: [triton]`** instead of the plan's "comment vLLM out" workaround: cleaner UX, the default stack still works, opt-in is one flag (`--profile triton`)
 
 ### LiteLLM second backend entry
-- [ ] Edit `litellm/config.yaml`: add a second `model_list` entry — `model_name: qwen-chat-trt`, `litellm_params: { model: triton/qwen-chat-trt, api_base: http://triton-server:8002 }` (native `triton/` provider — no custom adapter)
-- [ ] Add (commented-out) `router_settings.model_group_alias: { qwen-chat: [qwen-chat, qwen-chat-trt] }` block — the optional "swap to TRT without app changes" lesson
-- [ ] Update `litellm/README.md` with the second-backend example + the alias lesson
+- [x] Edit `litellm/config.yaml`: add a second `model_list` entry `model_name: qwen-chat-trt`, `litellm_params: { model: triton/ensemble, api_base: http://triton-server:8002 }` — uses `triton/ensemble` (the inflight_batcher_llm ensemble model name), not `triton/qwen-chat-trt` as the plan said (Triton's internal model name is fixed by the template, not by the LiteLLM logical name)
+- [x] Add the (commented-out) `router_settings.model_group_alias` block — Triton-preferred with vLLM fallback. Reader can uncomment + restart litellm to demo the alias swap
+- [x] Update `litellm/README.md` with the actual diff that ships + the alias-swap workflow + pointer to `triton/README.md`
 
 ### Prometheus + Grafana
-- [ ] Add Prometheus scrape job `triton` against `triton-server:8004` with `labels: { layer: inference }`
-- [ ] Write new `grafana/dashboards/03-trt-llm.json` with `nv_inference_request_duration_us` and `nv_inference_compute_infer_duration_us` panels (request latency vs. compute-only) — additive only, do not touch the vLLM panels
-- [ ] Note in the dashboard description: the gateway p95 panel auto-includes both backends (aggregates by `model` label)
+- [x] Add Prometheus scrape job `triton` against `triton-server:8004` with `labels: { layer: inference }`. Job is health=DOWN with "no such host" when the profile is off — expected, Prometheus tolerates fine
+- [x] Write new `grafana/dashboards/03-trt-llm.json` with 5 panels: request rate (success/failure), mean total duration, queue-vs-compute split, pending requests, GPU memory. **Important caveat in the dashboard description**: Triton emits durations as monotonic counters (mean only), not histograms — no p95 from this surface. Take percentiles from LiteLLM's request-duration histogram on the gateway side instead
+- [x] The gateway-side p95 panel on `01-llm-overview.json` already aggregates by `model` label, so it picks up TRT-LLM automatically when traffic hits `qwen-chat-trt` — no edit needed
 
 ### Docs + load testing
-- [ ] Write `triton/README.md`: what it is, how to rebuild engines, GPU-specific binary caveat, smoke tests, troubleshooting matrix
-- [ ] Extend `scripts/load.sh` (or its trunks equivalent) with a `--model qwen-chat-trt` mode so the headline TRT dashboard can be driven
+- [x] Write `triton/README.md`: what it is, full end-to-end workflow (pull → free GPU → build → up → curl), GPU-specific-binary caveat, two ways to swap the app, smoke tests, troubleshooting matrix, honest "this phase is the most fragile" section
+- [x] Extend `scripts/load.sh`: new `--model=NAME` flag, defaults to `qwen-chat`, passes through to every generated payload. The run-banner now prints which model is being driven
 
 ### Pins + validation
-- [ ] Update `VERSIONS.md`: add `triton-server` image pin
-- [ ] Smoke test: `curl :4000/v1/chat/completions -d '{"model":"qwen-chat-trt", ...}'` returns a completion
-- [ ] Smoke test: while only Triton is up, the original `qwen-chat` model also still works *if* both backends are mapped through the alias (and stops working if only TRT is alive without alias — document this as expected)
+- [x] Update `VERSIONS.md`: add `triton-server:25.04-trtllm-python-py3` image pin row, last-verified 2026-05-14
+- [x] `docker compose config -q` passes both with and without `--profile triton`; `yamllint -s .` clean; dashboard JSON validates
+- [x] LiteLLM restart picks up the new model_list entry: `curl :4000/v1/models` now returns both `qwen-chat` and `qwen-chat-trt`
+- [x] Prometheus reload picks up the new scrape job: `up{job="triton"}` is registered with health=down (expected — profile-gated)
+- [x] *(user-side)* Ran `scripts/build-trt-engine.sh` — engine compiled, model_repository assembled, all 5 Triton models reach READY
+- [x] *(user-side)* Smoke test: `curl :4000/v1/chat/completions -d '{"model":"qwen-chat-trt", ...}'` returns HTTP 200 with content. **Content is gibberish** (e.g. "akenspacessly") because the build uses `--weight_only_precision int4` (naive int4, no calibration). The seam swap works end-to-end; the quality fix is real-AWQ-via-modelopt (~30 min extra build) and is captured as a known limitation in `triton/README.md`
+- [x] Chat app gains a sidebar "Backend" dropdown to switch between `qwen-chat` (vLLM) and `qwen-chat-trt` (Triton) live; per-turn association property `backend` lets Langfuse filter traces by engine
+- [ ] *(deferred)* Drive load against TRT-LLM to populate the `03-trt-llm` dashboard — gated on accepting the quality limitation or doing the real-AWQ build
+
+### Debugging journey (post-mortem worth keeping)
+TRT-LLM 0.18 had ~10 places where the plan was outdated. Each one cost a debug cycle; documenting here so a future Triton image bump can skim and skip:
+- Paths in 0.18: `/app/examples/qwen/` (not `/app/tensorrt_llm/examples/qwen/`); `/app/all_models/` (not `/tensorrtllm_backend/all_models/`); `/app/tools/fill_template.py` (not `/tensorrtllm_backend/tools/`)
+- `--weight_only_precision int4_awq` removed in 0.18; only `int4` (plain), `int4_gptq`, `int8`. Real AWQ now lives in `examples/quantization/quantize.py` (modelopt flow)
+- `convert_checkpoint.py --model_dir` needs a local directory, not a HF model id — added `snapshot_download` step in the script
+- Stage 3 cleanup must run *inside* the container (root-owned files from prior runs are unrm-able from the host)
+- Tokenizer must live INSIDE a model subdirectory (`preprocessing/tokenizer/`) — bare `model_repository/tokenizer/` confuses Triton's model scanner with "Could not determine backend"
+- The host's `hpet`-only clocksource (TSC marked unreliable by kernel) triggers a PyTorch `__rdtsc()` race in `c10::ApproximateClock` that crashes the preprocessing Python stub; mitigated by `cpuset: "0-3"` pinning in compose; preflight warns if `tsc` isn't in `available_clocksource`
+- `sink_token_length:0` triggers `Assertion failed: sinkTokenLength > 0` in TRT-LLM 0.18; must be empty string to leave `std::nullopt`
+- `tensorrt_llm_bls`'s `${tensorrt_llm_model_name}` placeholder was unfilled — required to make BLS forward to `tensorrt_llm`; validator now catches this
+- LiteLLM's `triton/` provider needs the full per-model URL (`/v2/models/ensemble/generate`), not just the host
+- LiteLLM rejects `temperature` for the `triton/` provider; `drop_params: true` in `litellm/config.yaml` makes the same payload swap between vLLM and Triton
+- Streaming mismatch (`decoupled_mode: false` ensemble vs. LiteLLM defaulting to streaming for chat-completions on Triton) — pinned in app via `ChatOpenAI(streaming=False)`
+- Chat template patch (`triton/patches/apply_chat_template.py`) IS applied and produces valid ChatML; output gibberish is purely the int4-plain quant
+- New tool: `scripts/validate-triton-repo.sh` catches all of the config-level issues above in <1s offline, so the next round doesn't need a 60s Triton boot to find them
 
 ---
 

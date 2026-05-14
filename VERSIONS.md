@@ -12,6 +12,7 @@ and when it was last verified working.
 | Service | Image | Tag / digest | Last verified |
 | ------- | ----- | ------------ | ------------- |
 | vllm-engine | `vllm/vllm-openai` | `v0.6.6` | 2026-05-12 — AWQ-Marlin kernel for Ada (8.9) stable here |
+| triton-server | `nvcr.io/nvidia/tritonserver` | `25.04-trtllm-python-py3` | 2026-05-14 — Phase 2.0; ~25 GB unpacked. Holds TRT-LLM build tools + the `tensorrtllm_backend` runtime. Compose `profiles: [triton]` — opt-in only |
 | litellm | `ghcr.io/berriai/litellm` | `@sha256:6c82d338a60e…` (`main-stable` as of 2026-04-26) | 2026-05-13 — pinned by manifest digest, not tag |
 | langfuse-db | `postgres` | `16-alpine` | 2026-05-12 — Langfuse v3 migrations tested against PG 14-17 |
 | langfuse | `langfuse/langfuse` | `3.174.1` | 2026-05-14 — Phase 2.1 bump; latest v3 at pin time, replaces v2.95.11 |

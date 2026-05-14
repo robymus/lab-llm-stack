@@ -1,0 +1,156 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {"type": "grafana", "uid": "-- Grafana --"},
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Triton + TensorRT-LLM backend (Phase 2.0). Panels use the `nv_inference_*` metric family — a deliberately different vocabulary from vLLM's `vllm:*` series, so dashboards learn two metric languages. The gateway-side LLM Overview dashboard auto-includes both backends because LiteLLM aggregates by `model` label.\n\nNote: Triton emits durations as monotonic counters (microseconds-sum + count), not histograms, so panels show MEAN latency, not p95. For percentile views, take percentiles on the gateway side via litellm's request-duration histogram.\n\nGated behind compose's `triton` profile — panels stay empty until `docker compose --profile triton up triton-server`.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Request rate (success vs failure)",
+      "description": "Successful vs failed inference rate at Triton, split by model. `nv_inference_request_success` is the canonical request counter; `nv_inference_request_failure` ticks up on errors (OOM, malformed input, timeout). For our sandbox we expect failure to stay at zero.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+      "targets": [
+        {"expr": "sum by (model) (rate(nv_inference_request_success[1m]))", "refId": "A", "legendFormat": "success {{model}}", "datasource": {"type": "prometheus", "uid": "prometheus"}},
+        {"expr": "sum by (model) (rate(nv_inference_request_failure[1m]))", "refId": "B", "legendFormat": "failure {{model}}", "datasource": {"type": "prometheus", "uid": "prometheus"}}
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "reqps", "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 10}},
+        "overrides": []
+      },
+      "options": {
+        "legend": {"displayMode": "table", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi"}
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Mean total request duration (queue + compute)",
+      "description": "Wall-clock end-to-end mean per request: `rate(nv_inference_request_duration_us) / rate(nv_inference_count)` converted to seconds. Includes time waiting in Triton's scheduling queue.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "(sum by (model) (rate(nv_inference_request_duration_us[1m])) / sum by (model) (rate(nv_inference_count[1m]))) / 1e6",
+          "refId": "A",
+          "legendFormat": "{{model}}",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "s", "min": 0, "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 10}},
+        "overrides": []
+      },
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi"}
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Mean compute-only latency",
+      "description": "Same shape as total duration, but excludes queue time: `nv_inference_compute_infer_duration_us / nv_inference_count`. Subtract this from the total panel to see how much time was spent waiting vs computing — the canonical saturation indicator for an inflight-batched backend.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "(sum by (model) (rate(nv_inference_compute_infer_duration_us[1m])) / sum by (model) (rate(nv_inference_count[1m]))) / 1e6",
+          "refId": "A",
+          "legendFormat": "compute {{model}}",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        },
+        {
+          "expr": "(sum by (model) (rate(nv_inference_queue_duration_us[1m])) / sum by (model) (rate(nv_inference_count[1m]))) / 1e6",
+          "refId": "B",
+          "legendFormat": "queue {{model}}",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "s", "min": 0, "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 10}},
+        "overrides": []
+      },
+      "options": {
+        "legend": {"displayMode": "table", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi"}
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Pending + active inference requests",
+      "description": "`nv_inference_pending_request_count` is the queue depth (requests waiting to be batched). Climbs under saturation; the canonical 'I need to scale' signal.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8},
+      "targets": [
+        {
+          "expr": "sum by (model) (nv_inference_pending_request_count)",
+          "refId": "A",
+          "legendFormat": "pending {{model}}",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "short", "min": 0, "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 10}},
+        "overrides": []
+      },
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi"}
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "GPU memory used by Triton (bytes)",
+      "description": "Memory reported by Triton's own model statistics. Useful to verify the engine actually loaded (jumps from 0 to a few GB once the .engine is mapped) and that it isn't growing unbounded under load.",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "gridPos": {"x": 0, "y": 16, "w": 24, "h": 8},
+      "targets": [
+        {
+          "expr": "nv_gpu_memory_used_bytes",
+          "refId": "A",
+          "legendFormat": "GPU {{gpu_uuid}}",
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {"unit": "bytes", "min": 0, "custom": {"drawStyle": "line", "lineWidth": 2, "fillOpacity": 10}},
+        "overrides": []
+      },
+      "options": {
+        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi"}
+      }
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["llm-stack", "phase-2", "triton", "trt-llm"],
+  "templating": {"list": []},
+  "time": {"from": "now-30m", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "TRT-LLM (Triton backend)",
+  "uid": "trt-llm",
+  "version": 1,
+  "weekStart": ""
+}

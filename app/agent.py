@@ -113,21 +113,28 @@ def _to_lc_history(messages: list[dict]) -> list:
 
 
 class Agent:
-    """An LLM agent bound to one user_id, with OTLP tracing built in.
+    """An LLM agent bound to one user_id + backend model, with OTLP tracing.
 
     Auto-instrumentation runs at module import; this class just builds the
     LangChain executor and stamps `user_id` onto each chat call's spans.
+
+    The `model_name` parameter is the LiteLLM logical model — `qwen-chat`
+    (vLLM, default) or `qwen-chat-trt` (Triton + TRT-LLM, Phase 2.0). The
+    rest of the agent is unchanged; the gateway routes the same payload to
+    a different engine. That's the Phase-2 swap point in live action.
     """
 
-    def __init__(self, user_id: str):
+    def __init__(self, user_id: str, model_name: str = "qwen-chat"):
         self._user_id = user_id
+        self._model_name = model_name
 
         # ---- LLM --------------------------------------------------------
         llm = ChatOpenAI(
-            # Logical model name — LiteLLM routes "qwen-chat" to vllm-engine.
-            # This is the Phase-2 swap point in action: swap to Triton later
-            # and the only change here is the string.
-            model="qwen-chat",
+            # Logical model name — LiteLLM routes this to the configured
+            # backend (vLLM for `qwen-chat`, Triton for `qwen-chat-trt`).
+            # This is the Phase-2 swap point in action: switch backends and
+            # the only change in the app is the string here.
+            model=model_name,
             base_url=os.environ["OPENAI_API_BASE"],
             api_key=os.environ["LITELLM_MASTER_KEY"],
             # X-User-Id header: forwarded by LiteLLM (forward_client_headers_to_llm_api)
@@ -139,6 +146,17 @@ class Agent:
             model_kwargs={"user": user_id},
             temperature=0.3,
             max_tokens=512,
+            # Force non-streaming. The Phase 2.0 Triton backend's ensemble
+            # is configured with `decoupled_mode: false` (single response
+            # per request, no SSE). If anything in the LangChain →
+            # langchain-openai → openai SDK → LiteLLM chain flips streaming
+            # on (some versions do, especially for chat-completions routed
+            # through LiteLLM's `triton/` provider), Triton rejects with
+            # "Streaming is only supported if model is deployed using
+            # decoupled mode". Setting this explicitly here is the
+            # belt-and-braces fix for both the qwen-chat (vLLM) and
+            # qwen-chat-trt (Triton) paths.
+            streaming=False,
         )
 
         # ---- Agent + executor ------------------------------------------
@@ -168,14 +186,24 @@ class Agent:
         # emitted within this thread's context. Surfaces in Langfuse v3
         # as `metadata.traceloop.association.properties.user_id` and is
         # filterable from the UI.
-        Traceloop.set_association_properties({"user_id": self._user_id, "session_id": self._user_id})
+        # `backend` stamps which logical model (and therefore which engine
+        # behind the gateway) served this turn — handy for "filter by
+        # backend" in Langfuse when comparing vLLM vs Triton outputs.
+        Traceloop.set_association_properties(
+            {
+                "user_id": self._user_id,
+                "session_id": self._user_id,
+                "backend": self._model_name,
+            }
+        )
         result = self._executor.invoke(
             {"input": user_input, "chat_history": _to_lc_history(history)},
         )
         return result.get("output") or "(no response)"
 
 
-def build_executor(user_id: str) -> Agent:
-    """Construct an Agent bound to `user_id`. Thin factory used by `app.py` so
-    Streamlit's `@st.cache_resource` has a single function to cache."""
-    return Agent(user_id)
+def build_executor(user_id: str, model_name: str = "qwen-chat") -> Agent:
+    """Construct an Agent bound to `user_id` + `model_name`. Thin factory used
+    by `app.py` so Streamlit's `@st.cache_resource` has a single function to
+    cache (one Agent per (user, backend) pair)."""
+    return Agent(user_id, model_name)

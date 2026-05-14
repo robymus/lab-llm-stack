@@ -1,0 +1,5 @@
+# Keeps `triton/model_repository/` present in git so the bind-mount in
+# docker-compose.yaml works on a fresh clone before the build script runs.
+# The build script (`scripts/build-trt-engine.sh`) populates this directory
+# with the inflight_batcher_llm template + the compiled `.engine` file.
+# That generated content is gitignored — see ../../.gitignore.

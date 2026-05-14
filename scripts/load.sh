@@ -64,6 +64,9 @@ ${BOLD}Profiles:${RESET}
 ${BOLD}Options:${RESET}
   --rate=N         Override the profile's starting rate (e.g. --rate=4, --rate=4/s)
   --duration=Ts    Override the profile's duration (e.g. 30s, 1m)
+  --model=NAME     Target a different gateway model (default: qwen-chat).
+                   Phase 2.0 ships qwen-chat-trt for the Triton/TRT-LLM backend —
+                   use --model=qwen-chat-trt to drive load against it specifically.
   --variations=N   Generate N salted variations per base prompt (default: 1).
                    Defeats vLLM's prefix cache for realistic hit rates.
                    Rule of thumb: set to (rate × duration) / number_of_prompts
@@ -100,6 +103,7 @@ QUIET=0
 VARIATIONS=1
 WORKERS=128
 MAX_WORKERS=4096
+MODEL_NAME="qwen-chat"           # default; override with --model=qwen-chat-trt for Triton (Phase 2.0)
 
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ] || [ "${1:-}" = "--list" ]; then
     usage; exit 0
@@ -113,6 +117,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --rate=*)         RATE_OVERRIDE="${1#*=}" ;;
         --duration=*)     DURATION_OVERRIDE="${1#*=}" ;;
+        --model=*)        MODEL_NAME="${1#*=}" ;;
         --variations=*)   VARIATIONS="${1#*=}" ;;
         --workers=*)      WORKERS="${1#*=}" ;;
         --max-workers=*)  MAX_WORKERS="${1#*=}" ;;
@@ -271,14 +276,16 @@ build_mixed() {
 
 # Write a JSON payload for a chat completion request.
 #   $1 = file path, $2 = max_tokens, $3 = user message, $4 = optional system
+# Uses the global $MODEL_NAME so --model=qwen-chat-trt re-targets every
+# payload at the Phase-2.0 Triton backend without touching the loop.
 write_payload() {
     local file="$1" max="$2" user="$3" sys="${4:-}"
     if [ -n "$sys" ]; then
-        printf '{"model":"qwen-chat","messages":[{"role":"system","content":"%s"},{"role":"user","content":"%s"}],"max_tokens":%s,"temperature":0.3}\n' \
-            "$sys" "$user" "$max" > "$file"
+        printf '{"model":"%s","messages":[{"role":"system","content":"%s"},{"role":"user","content":"%s"}],"max_tokens":%s,"temperature":0.3}\n' \
+            "$MODEL_NAME" "$sys" "$user" "$max" > "$file"
     else
-        printf '{"model":"qwen-chat","messages":[{"role":"user","content":"%s"}],"max_tokens":%s,"temperature":0.3}\n' \
-            "$user" "$max" > "$file"
+        printf '{"model":"%s","messages":[{"role":"user","content":"%s"}],"max_tokens":%s,"temperature":0.3}\n' \
+            "$MODEL_NAME" "$user" "$max" > "$file"
     fi
 }
 
@@ -508,7 +515,7 @@ profile_marathon() {
 #  Dispatch
 # ---------------------------------------------------------------------------
 
-echo "${BOLD}LLM-sandbox load test${RESET}  profile=${CYAN}$PROFILE${RESET}  out=${OUT_DIR}"
+echo "${BOLD}LLM-sandbox load test${RESET}  profile=${CYAN}$PROFILE${RESET}  model=${CYAN}$MODEL_NAME${RESET}  out=${OUT_DIR}"
 
 case "$PROFILE" in
     smoke)         profile_smoke ;;

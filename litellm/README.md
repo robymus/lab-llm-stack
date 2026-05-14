@@ -30,7 +30,7 @@ model_list:
       api_base: http://vllm-engine:8000/v1   # ← the entire Phase 2 swap point
 ```
 
-When Phase 2 plugs in Triton + TensorRT-LLM, the diff to this file looks like:
+**Phase 2.0 makes this real.** The actual diff that ships:
 
 ```diff
    - model_name: qwen-chat
@@ -39,13 +39,33 @@ When Phase 2 plugs in Triton + TensorRT-LLM, the diff to this file looks like:
        api_base: http://vllm-engine:8000/v1
 +  - model_name: qwen-chat-trt
 +    litellm_params:
-+      model: openai/ensemble                 # Triton's model name
-+      api_base: http://triton:8000/v2
++      model: triton/ensemble                 # native `triton/` provider
++      api_base: http://triton-server:8002    # Triton's HTTP port
 ```
+
+(Note: the prefix is `triton/`, not `openai/` — LiteLLM's native Triton
+provider handles the wire-format translation between OpenAI chat
+completions and Triton's `text_input`/`text_output`.)
 
 And the app's `model="qwen-chat"` becomes `model="qwen-chat-trt"`. No app
 code changes. No Prometheus changes. No Langfuse changes. **That** is what
 a gateway is for, and that's the lesson worth internalising.
+
+For the slicker version — switching the entire app to TRT-LLM without
+even touching the `model=` string — uncomment the
+`router_settings.model_group_alias` block in `config.yaml`:
+
+```yaml
+router_settings:
+  model_group_alias:
+    qwen-chat: ["qwen-chat-trt", "qwen-chat"]
+```
+
+Now `qwen-chat` requests prefer Triton (with vLLM as fallback).
+`docker compose restart litellm` to apply.
+
+See [../triton/README.md](../triton/README.md) for the full bring-up
+workflow, including the engine compile step.
 
 ## Configuration walkthrough
 

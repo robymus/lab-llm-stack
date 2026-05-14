@@ -104,6 +104,30 @@ if docker info 2>/dev/null | grep -qi 'Runtimes:.*nvidia'; then
 fi
 
 # ---------------------------------------------------------------------------
+section "Clock source (Phase 2.0 — Triton's Python stubs)"
+# Triton's Python backend (preprocessing / postprocessing / BLS) imports
+# torch, which initialises `c10::ApproximateClock` and reads `__rdtsc()`
+# in userspace. On hosts where the kernel marked TSC unreliable (i.e.
+# tsc is NOT in /sys/...available_clocksource), userspace TSC reads can
+# come back non-monotonic across CPU migrations and the stub crashes
+# with `fast_1 >= fast_0 INTERNAL ASSERT FAILED`.
+clocksrc_avail="$(cat /sys/devices/system/clocksource/clocksource0/available_clocksource 2>/dev/null || echo "")"
+clocksrc_curr="$(cat /sys/devices/system/clocksource/clocksource0/current_clocksource 2>/dev/null || echo "")"
+if [ -z "$clocksrc_avail" ]; then
+    warn "could not read /sys/.../available_clocksource — skipping Triton clock check"
+elif echo "$clocksrc_avail" | grep -qw tsc; then
+    ok "tsc is available as a clocksource (current: $clocksrc_curr)"
+elif docker compose --profile triton config --services 2>/dev/null | grep -q triton-server; then
+    # Only show this as a soft warning when the user has the triton
+    # profile in their compose project — for everyone else it's irrelevant.
+    warn "tsc NOT in available_clocksource (have: $clocksrc_avail)"
+    hint "Triton's python stubs are vulnerable to a PyTorch __rdtsc() race"
+    hint "Mitigation already shipped: docker-compose.yaml pins triton-server to cpuset 0-3"
+    hint "If preprocessing still crashes with 'fast_1 >= fast_0', the cpuset wasn't tight enough"
+    hint "More invasive fix (requires reboot): add  tsc=reliable  to the kernel cmdline in GRUB"
+fi
+
+# ---------------------------------------------------------------------------
 section "Disk space"
 # Phase 1 needed ~30 GB. Phase 2 adds another ~15 GB (Triton + CH + Minio +
 # Loki + extra images) and the plan calls out ≥ 45 GB free in §7. We measure

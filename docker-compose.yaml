@@ -201,6 +201,90 @@ services:
     shm_size: "2gb"
 
   # =========================================================================
+  #  Triton Inference Server (Phase 2.0 — second backend, opt-in)
+  # -------------------------------------------------------------------------
+  #  Serves a TensorRT-LLM-compiled Qwen2.5-3B engine via Triton's standard
+  #  /v2 inference API. LiteLLM routes the logical model name `qwen-chat-trt`
+  #  here (see litellm/config.yaml); to actually use it, switch the agent's
+  #  model name OR enable the `model_group_alias` block at the bottom of the
+  #  LiteLLM config.
+  #
+  #  Why it's gated behind `profiles: [triton]`:
+  #    - 8 GB GPU constraint — vLLM and Triton can't both fit at full batch.
+  #      The default profile is "vLLM only"; opt into `triton` (and stop
+  #      vllm-engine first) when you want to demo the swap.
+  #    - The compiled engine binary is GPU-specific (SM 8.9 only) and must
+  #      be built via `scripts/build-trt-engine.sh` before this service can
+  #      start healthy. Bundling the engine into git would be a ~3 GB blob
+  #      that doesn't run on anyone else's GPU.
+  #
+  #  Swap workflow (when the engine has been built):
+  #      docker compose stop vllm-engine
+  #      docker compose --profile triton up -d triton-server
+  #  And the other way back:
+  #      docker compose stop triton-server
+  #      docker compose up -d vllm-engine
+  # =========================================================================
+  triton-server:
+    image: nvcr.io/nvidia/tritonserver:25.04-trtllm-python-py3
+    container_name: triton-server
+    restart: unless-stopped
+    profiles: [triton]                        # opt-in only — `docker compose up` (no --profile) skips this
+
+    command:
+      - tritonserver
+      - --model-repository=/models
+      - --log-verbose=1
+      - --http-port=8002                      # avoid colliding with vLLM:8000 (so both CAN run side by side
+                                              # if you ever swap to a bigger GPU)
+      - --grpc-port=8003
+      - --metrics-port=8004                   # Prometheus scrape target — see prometheus/prometheus.yml
+
+    volumes:
+      # The model repository populated by scripts/build-trt-engine.sh —
+      # holds the .engine binary, tokenizer files, and the inflight_batcher_llm
+      # ensemble (preprocess + tensorrt_llm + postprocess + bls).
+      - ./triton/model_repository:/models:ro
+
+    ports:
+      - "8002:8002"                           # HTTP /v2 inference
+      - "8004:8004"                           # Prometheus /metrics
+
+    networks:
+      - llm-stack
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+    shm_size: "1gb"                           # tritonserver workers need shm — 1g is enough for batch_size 8
+
+    # Pin all in-container threads to a small CPU set so the Python stub
+    # processes (preprocessing / postprocessing / BLS) don't get migrated
+    # between cores mid-startup. Without this, PyTorch's userspace
+    # __rdtsc() reads in `c10::ApproximateClock` can come back
+    # non-monotonic across migrations and the python stub crashes with
+    # `fast_1 >= fast_0 INTERNAL ASSERT FAILED ... getCount is non-monotonic`.
+    # Hosts where /sys/.../current_clocksource is anything other than
+    # `tsc` are vulnerable; preflight.sh warns about that. 4 cores is
+    # plenty for our batch_size=8 — Triton's heavy lifting is on the GPU.
+    cpuset: "0-3"
+
+    healthcheck:
+      # /v2/health/ready returns 200 once all models in the repo are
+      # loaded. With the inflight_batcher_llm ensemble (5 sub-models),
+      # cold-start takes 30-90 s — generous start_period.
+      test: ["CMD", "curl", "-fsS", "http://localhost:8002/v2/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+
+  # =========================================================================
   #  LiteLLM gateway
   # -------------------------------------------------------------------------
   #  The orchestration seam. One YAML file decides which backend handles

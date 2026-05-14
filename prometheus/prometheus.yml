@@ -40,6 +40,20 @@ scrape_configs:
         labels: { layer: inference }
 
   # ---------------------------------------------------------------------
+  #  Triton Inference Server (Phase 2.0 — opt-in second backend)
+  # ---------------------------------------------------------------------
+  # Triton's native /metrics endpoint runs on a separate port (8004 here)
+  # from its inference API (8002). Series prefix `nv_inference_*` — a
+  # genuinely different vocabulary from vLLM's `vllm:*`, so the
+  # 03-trt-llm dashboard learns a second metric language. The job will
+  # show DOWN whenever the `triton` profile isn't active, which is
+  # expected — Prometheus tolerates a missing target without errors.
+  - job_name: triton
+    static_configs:
+      - targets: ["triton-server:8004"]
+        labels: { layer: inference }
+
+  # ---------------------------------------------------------------------
   #  LiteLLM gateway
   # ---------------------------------------------------------------------
   # The Prometheus callback (`callbacks: ["prometheus"]` in config.yaml)
