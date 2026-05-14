@@ -1,36 +1,79 @@
-"""LangChain agent + Langfuse instrumentation, encapsulated as `Agent`.
+"""LangChain agent + OpenLLMetry/OTLP tracing, encapsulated as `Agent`.
 
-Tracing path: LangChain's `CallbackHandler` mechanism. The Langfuse SDK's
-handler hooks into the standard LangChain callbacks for chain/llm/tool
-events, batches them, and POSTs to Langfuse's ingestion API.
+Tracing path (Phase 2.2): traceloop-sdk auto-instruments LangChain, the
+OpenAI client, and httpx. Spans are pushed via OTLP/HTTP to the
+otel-collector container, which batches and forwards them to Langfuse v3
+with HTTP Basic auth. The app no longer knows anything about Langfuse —
+the collector is the only thing in this codebase that does.
 
-Why not OTLP via OpenLLMetry / Traceloop? Langfuse v2 doesn't expose an
-OTLP/HTTP endpoint — that's a v3 feature (which would need a separate
-ClickHouse + Redis + Minio backend the plan deliberately avoids). The
-trace tree visible in the Langfuse UI is identical either way; only the
-transport differs.
+Compared to Phase 1.2's `langfuse.callback.CallbackHandler` path, this
+restores the httpx sub-spans under each tool span (one extra level of
+detail visible in the Langfuse UI) and decouples the app from the trace
+backend's wire protocol.
 
-Loss from this trade-off: httpx calls inside our tools don't appear as
-separate child spans (OTLP + Traceloop + Langfuse-v3 would show them, but
-the v2-native callback won't). Each tool span shows the function call and
-its return value; the in-flight HTTP round trip is collapsed inside. To
-inspect those, the mock-services container exposes its own /metrics with
-per-handler latency histograms — same information, different surface.
+Per-user identity propagates via `Traceloop.set_association_properties`,
+which attaches `user_id` (and any other key/value pairs) to every span
+emitted within that thread's context. The Langfuse UI surfaces those
+properties under `metadata.traceloop.association.properties.user_id`.
 
-Escape hatch: if we ever upgrade Langfuse to v3, this whole module flips
-back to traceloop-sdk + OTLP. The app-facing API (`Agent` / `chat`) stays
-the same; only the inside of `Agent` changes.
+NB: `Traceloop.init(...)` is called at *module import time*, before any
+`from langchain...` / `from openai...` imports — that ordering matters
+because the auto-instrumentors wrap classes when they're imported.
 """
 
+# ---------------------------------------------------------------------------
+#  Traceloop init MUST come before the framework imports below.
+# ---------------------------------------------------------------------------
 import os
 
-from langchain.agents import AgentExecutor, create_tool_calling_agent
-from langchain_core.messages import AIMessage, HumanMessage
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
-from langfuse.callback import CallbackHandler
+from traceloop.sdk import Traceloop
 
-from tools import ALL_TOOLS
+Traceloop.init(
+    app_name=os.environ.get("OTEL_SERVICE_NAME", "llm-sandbox-app"),
+    # api_endpoint is read directly from OTEL_EXPORTER_OTLP_ENDPOINT if
+    # not passed. We pass it explicitly so the failure mode is "missing
+    # env var → KeyError at startup" instead of "silently exports to the
+    # Traceloop SaaS default endpoint".
+    api_endpoint=os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"],
+    # The otel-collector's `batch` processor already batches; doing it
+    # twice would just add latency without further coalescing.
+    disable_batch=True,
+)
+
+# traceloop-sdk doesn't auto-instrument generic HTTP clients. Add httpx
+# explicitly so the GET-to-mock-services sub-span appears under each tool
+# span — that's the Phase 2.2 exit criterion ("httpx sub-spans restored").
+from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor  # noqa: E402
+
+HTTPXClientInstrumentor().instrument()
+
+# ---------------------------------------------------------------------------
+#  Framework imports (auto-instrumented by traceloop above).
+# ---------------------------------------------------------------------------
+from langchain.agents import AgentExecutor, create_tool_calling_agent  # noqa: E402
+from langchain_core.messages import AIMessage, HumanMessage  # noqa: E402
+from langchain_core.prompts import ChatPromptTemplate  # noqa: E402
+from langchain_openai import ChatOpenAI  # noqa: E402
+
+from tools import ALL_TOOLS  # noqa: E402
+
+# Known limitation (Phase 2.2):
+#   The `Tokens` field on `ChatOpenAI.chat` Generations in the Langfuse v3 UI
+#   reads 0/0/0. vLLM and LiteLLM both return `usage.prompt_tokens` /
+#   `completion_tokens` on the chat-completions response, but OpenLLMetry's
+#   instrumentors (0.60.x) don't propagate them into the
+#   `gen_ai.usage.input_tokens` / `output_tokens` OTel attributes Langfuse v3
+#   reads. We tried bridging via a LangChain callback (`on_llm_end` reading
+#   `llm_output.token_usage`); it fires AFTER the OpenLLMetry-managed
+#   Generation span has been ended, so `span.set_attribute` no-ops.
+#   Token counts ARE still observable through:
+#     - LiteLLM's /metrics — series `litellm_total_tokens`, `litellm_*_tokens_metric`
+#     - vLLM's /metrics — `vllm:prompt_tokens_total`, `vllm:generation_tokens_total`
+#     - The "Tokens / second" panel on the LLM Overview Grafana dashboard
+#   Revisit when OpenLLMetry's openai instrumentor ships proper usage extraction
+#   for chat-completions-via-langchain-openai, or when Langfuse publishes an
+#   alternative OTel attribute Langfuse v3 already reads.
+
 
 # System prompt enumerates tools by name and gives selection hints.
 # Small models (Qwen-3B) need the explicit list to pick tools well.
@@ -70,26 +113,14 @@ def _to_lc_history(messages: list[dict]) -> list:
 
 
 class Agent:
-    """An LLM agent bound to one user_id, with Langfuse tracing built in.
+    """An LLM agent bound to one user_id, with OTLP tracing built in.
 
-    The Langfuse `CallbackHandler` and the LangChain `AgentExecutor` are
-    constructed together and kept private — callers just call `chat(...)`.
-    Traces flush at the end of every turn.
+    Auto-instrumentation runs at module import; this class just builds the
+    LangChain executor and stamps `user_id` onto each chat call's spans.
     """
 
     def __init__(self, user_id: str):
-        # ---- Langfuse handler ------------------------------------------
-        # user_id and session_id both set to the same string so the Langfuse
-        # UI's per-user and per-session filters both group cleanly. tags
-        # let you filter for "everything from this phase" in the UI.
-        self._handler = CallbackHandler(
-            public_key=os.environ["LANGFUSE_PUBLIC_KEY"],
-            secret_key=os.environ["LANGFUSE_SECRET_KEY"],
-            host="http://langfuse:3000",
-            user_id=user_id,
-            session_id=user_id,
-            tags=["llm-sandbox", "phase-1.2"],
-        )
+        self._user_id = user_id
 
         # ---- LLM --------------------------------------------------------
         llm = ChatOpenAI(
@@ -104,17 +135,16 @@ class Agent:
             default_headers={"X-User-Id": user_id},
             # OpenAI's standard `user` body field. LiteLLM will surface this
             # on its per-`end_user` Prometheus label once virtual API keys
-            # are configured (Phase 2+ exercise); harmless until then.
+            # are configured (Phase 2.4 exercise); harmless until then.
             model_kwargs={"user": user_id},
             temperature=0.3,
             max_tokens=512,
         )
 
         # ---- Agent + executor ------------------------------------------
-        # Note: callbacks are NOT attached here. They flow in per-call via
-        # `invoke(config={"callbacks": [...]})` so they propagate through
-        # every child runnable. Attaching to AgentExecutor would only fire
-        # at the outermost span — see chat() below.
+        # No callbacks here — traceloop's auto-instrumentation wraps
+        # LangChain's `Chain.invoke` / `BaseChatModel.invoke` directly and
+        # produces the trace tree without us hooking anything up.
         agent_runnable = create_tool_calling_agent(llm, ALL_TOOLS, _PROMPT)
         self._executor = AgentExecutor(
             agent=agent_runnable,
@@ -133,22 +163,16 @@ class Agent:
 
         Returns the assistant's reply. Raises whatever the agent or its
         tools raise — the caller decides how to surface that to the user.
-        Whatever happens, the Langfuse trace is flushed before returning
-        so the UI sees it within ~1 s.
         """
-        try:
-            result = self._executor.invoke(
-                {"input": user_input, "chat_history": _to_lc_history(history)},
-                # Passing the handler via the invoke config (rather than the
-                # AgentExecutor constructor) is what gets us the full
-                # chain → llm → tool tree in Langfuse on LangChain 0.3+.
-                config={"callbacks": [self._handler]},
-            )
-            return result.get("output") or "(no response)"
-        finally:
-            # Force-flush so the trace appears in the UI immediately,
-            # instead of waiting for the SDK's background batch window.
-            self._handler.flush()
+        # Stamp user_id (and session_id, same value) onto every span
+        # emitted within this thread's context. Surfaces in Langfuse v3
+        # as `metadata.traceloop.association.properties.user_id` and is
+        # filterable from the UI.
+        Traceloop.set_association_properties({"user_id": self._user_id, "session_id": self._user_id})
+        result = self._executor.invoke(
+            {"input": user_input, "chat_history": _to_lc_history(history)},
+        )
+        return result.get("output") or "(no response)"
 
 
 def build_executor(user_id: str) -> Agent:

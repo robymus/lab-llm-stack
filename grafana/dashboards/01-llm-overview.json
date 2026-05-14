@@ -1,5 +1,7 @@
 {
-  "annotations": { "list": [] },
+  "annotations": {
+    "list": []
+  },
   "description": "Gateway + engine view: request rate, latency, tokens, queue depth, KV cache.",
   "editable": true,
   "fiscalYearStartMonth": 0,
@@ -13,164 +15,614 @@
       "type": "timeseries",
       "title": "Request rate (rps)",
       "description": "Requests per second through LiteLLM, summed across all models and users. Comes from llm:request_rate recording rule (rate of litellm_proxy_total_requests_metric_total over 1m).",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
-        { "expr": "llm:request_rate", "refId": "A", "legendFormat": "all", "datasource": { "type": "prometheus", "uid": "prometheus" } },
-        { "expr": "llm:request_rate_by_user", "refId": "B", "legendFormat": "user={{user}}", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+        {
+          "expr": "llm:request_rate",
+          "refId": "A",
+          "legendFormat": "all",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "llm:request_rate_by_user",
+          "refId": "B",
+          "legendFormat": "user={{user}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
       ],
       "fieldConfig": {
-        "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } },
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi" } }
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     },
     {
       "id": 2,
       "type": "timeseries",
       "title": "Latency p50 / p95 (s)",
       "description": "End-to-end gateway latency (LiteLLM perspective). The gap between p50 and p95 indicates whether latency is bimodal — typical for LLM serving when prefill bursts hit a busy decode loop.",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
-        { "expr": "llm:request_latency_p50_seconds", "refId": "A", "legendFormat": "p50", "datasource": { "type": "prometheus", "uid": "prometheus" } },
-        { "expr": "llm:request_latency_p95_seconds", "refId": "B", "legendFormat": "p95", "datasource": { "type": "prometheus", "uid": "prometheus" } },
-        { "expr": "llm:api_latency_p95_seconds", "refId": "C", "legendFormat": "p95 (api only)", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+        {
+          "expr": "llm:request_latency_p50_seconds",
+          "refId": "A",
+          "legendFormat": "p50",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "llm:request_latency_p95_seconds",
+          "refId": "B",
+          "legendFormat": "p95",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "llm:api_latency_p95_seconds",
+          "refId": "C",
+          "legendFormat": "p95 (api only)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
       ],
       "fieldConfig": {
-        "defaults": { "unit": "s", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 5 } },
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 5
+          }
+        },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi" } }
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     },
     {
       "id": 3,
       "type": "timeseries",
       "title": "Tokens / second",
       "description": "Generation (output) and prompt (input) token rates from vLLM. Output tokens/s is the headline throughput number; input tokens/s spikes during prefill of long prompts.",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
-        { "expr": "llm:tokens_per_second", "refId": "A", "legendFormat": "generation (out)", "datasource": { "type": "prometheus", "uid": "prometheus" } },
-        { "expr": "llm:prompt_tokens_per_second", "refId": "B", "legendFormat": "prompt (in)", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+        {
+          "expr": "llm:tokens_per_second",
+          "refId": "A",
+          "legendFormat": "generation (out)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "llm:prompt_tokens_per_second",
+          "refId": "B",
+          "legendFormat": "prompt (in)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
       ],
       "fieldConfig": {
-        "defaults": { "unit": "short", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } },
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi" } }
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     },
     {
       "id": 4,
       "type": "timeseries",
       "title": "Queue depth / active batch",
       "description": "Active batch = requests currently in vLLM's running batch. Queue depth = requests waiting to be batched. Non-zero queue depth means you're saturating — batching is the right knob.",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
-        { "expr": "llm:active_batch_size", "refId": "A", "legendFormat": "running", "datasource": { "type": "prometheus", "uid": "prometheus" } },
-        { "expr": "llm:queue_depth", "refId": "B", "legendFormat": "waiting", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+        {
+          "expr": "llm:active_batch_size",
+          "refId": "A",
+          "legendFormat": "running",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "llm:queue_depth",
+          "refId": "B",
+          "legendFormat": "waiting",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
       ],
       "fieldConfig": {
-        "defaults": { "unit": "short", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } },
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi" } }
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     },
     {
       "id": 5,
       "type": "timeseries",
       "title": "KV cache used (bytes)",
       "description": "Bytes of the KV cache slab currently holding active request tokens. Total slab capacity is ~3.19 GB (86,640 token slots × 36 KiB/token for Qwen2.5-3B in bf16; see prometheus/rules/llm.rules.yml `kv-cache-sizing` group). Computed inline as `vllm:gpu_cache_usage_perc × scalar(vllm:kv_cache_total_bytes)` — done in the panel rather than a recording rule because the cache fills and drains in 1-2 seconds during chat turns, faster than the rules' 30s evaluation. The 'max 1m' line is the rolling peak so brief spikes between 5s scrapes stay visible. Y-axis autoscales; even tiny spikes (a few KB on a single-prompt turn) show clearly.",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "x": 0, "y": 16, "w": 12, "h": 8 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
-        { "expr": "vllm:gpu_cache_usage_perc * scalar(vllm:kv_cache_total_bytes)", "refId": "A", "legendFormat": "live", "datasource": { "type": "prometheus", "uid": "prometheus" } },
-        { "expr": "max_over_time(vllm:gpu_cache_usage_perc[1m]) * scalar(vllm:kv_cache_total_bytes)", "refId": "B", "legendFormat": "max 1m", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+        {
+          "expr": "vllm:gpu_cache_usage_perc * scalar(vllm:kv_cache_total_bytes)",
+          "refId": "A",
+          "legendFormat": "live",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "max_over_time(vllm:gpu_cache_usage_perc[1m]) * scalar(vllm:kv_cache_total_bytes)",
+          "refId": "B",
+          "legendFormat": "max 1m",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "bytes",
           "min": 0,
-          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 }
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
         },
         "overrides": [
-          { "matcher": { "id": "byName", "options": "max 1m" }, "properties": [{ "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [6, 4] } }, { "id": "custom.fillOpacity", "value": 0 }] }
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "max 1m"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    6,
+                    4
+                  ]
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              }
+            ]
+          }
         ]
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi" } }
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     },
     {
       "id": 6,
       "type": "timeseries",
       "title": "Prefix cache hit rate",
       "description": "Fraction of prompt tokens that hit vLLM's prefix cache (--enable-prefix-caching). Repeated system prompts produce visible jumps — free perf when the cache catches.",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "x": 12, "y": 16, "w": 12, "h": 8 },
-      "targets": [
-        { "expr": "vllm:gpu_prefix_cache_hit_rate", "refId": "A", "legendFormat": "hit rate", "datasource": { "type": "prometheus", "uid": "prometheus" } }
-      ],
-      "fieldConfig": {
-        "defaults": { "unit": "percentunit", "min": 0, "max": 1, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } },
-        "overrides": []
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false }, "tooltip": { "mode": "single" } }
-    },
-    {
-      "id": 7,
-      "type": "timeseries",
-      "title": "Gateway success rate (server-side)",
-      "description": "Fraction of *completed* requests that returned 2xx, as observed by LiteLLM. IMPORTANT: this is SERVER-SIDE. A request that the client (e.g. trunks) times out on before a response arrives never gets a status_code label, so it doesn't appear here — the panel can read 100% even while most of the offered load is failing client-side. To catch overload before completions fail, watch the 'Gateway in-flight' panel to the right and the queue-depth panel above.",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "x": 0, "y": 24, "w": 12, "h": 8 },
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
-        { "expr": "llm:success_rate", "refId": "A", "legendFormat": "{{requested_model}}", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+        {
+          "expr": "vllm:gpu_prefix_cache_hit_rate",
+          "refId": "A",
+          "legendFormat": "hit rate",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "percentunit",
           "min": 0,
           "max": 1,
-          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Gateway success rate (server-side)",
+      "description": "Fraction of *completed* requests that returned 2xx, as observed by LiteLLM. IMPORTANT: this is SERVER-SIDE. A request that the client (e.g. trunks) times out on before a response arrives never gets a status_code label, so it doesn't appear here — the panel can read 100% even while most of the offered load is failing client-side. To catch overload before completions fail, watch the 'Gateway in-flight' panel to the right and the queue-depth panel above.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "llm:success_rate",
+          "refId": "A",
+          "legendFormat": "{{requested_model}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "red", "value": null },
-              { "color": "yellow", "value": 0.95 },
-              { "color": "green", "value": 0.99 }
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.95
+              },
+              {
+                "color": "green",
+                "value": 0.99
+              }
             ]
           }
         },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi" } }
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     },
     {
       "id": 8,
       "type": "timeseries",
       "title": "Gateway in-flight requests",
       "description": "Current number of requests the gateway is holding (received but not yet completed). Under healthy load this stays small (a few). When arrivals exceed sustainable throughput, this gauge climbs without bound — usually the earliest visible sign of overload, well before any client times out or any 5xx is emitted. If you see this climbing while success rate is still 100%, you're saturating: the gap between arrival and completion is filling the queue.",
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "gridPos": { "x": 12, "y": 24, "w": 12, "h": 8 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
       "targets": [
-        { "expr": "litellm_in_flight_requests", "refId": "A", "legendFormat": "in-flight", "datasource": { "type": "prometheus", "uid": "prometheus" } }
+        {
+          "expr": "litellm_in_flight_requests",
+          "refId": "A",
+          "legendFormat": "in-flight",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "short",
           "min": 0,
-          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 }
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
         },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "single" } }
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Trace span throughput (OTel collector)",
+      "description": "Spans/sec arriving from the agent vs. spans/sec leaving towards Langfuse. They track 1:1 in steady state; a divergence means the collector is buffering (queue climbing) or dropping (send_failed climbing). Series come from the otel-collector's own /metrics on :8888.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(otelcol_receiver_accepted_spans_total[1m]))",
+          "refId": "A",
+          "legendFormat": "received",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "sum(rate(otelcol_exporter_sent_spans_total[1m]))",
+          "refId": "B",
+          "legendFormat": "exported",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Trace export failures + queue depth",
+      "description": "`send_failed` ticks up on auth issues or Langfuse rejecting the POST; queue depth ticks up when Langfuse can't keep up. Both should be 0 / flat in steady state. If failed climbs while queue holds, look at otel-collector logs for HTTP status codes from Langfuse.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(otelcol_exporter_send_failed_spans_total[1m]))",
+          "refId": "A",
+          "legendFormat": "send_failed/s",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "expr": "sum(otelcol_exporter_queue_size)",
+          "refId": "B",
+          "legendFormat": "queue size",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     }
   ],
   "refresh": "5s",
   "schemaVersion": 39,
-  "tags": ["llm-stack", "phase-1.1"],
-  "templating": { "list": [] },
-  "time": { "from": "now-15m", "to": "now" },
+  "tags": [
+    "llm-stack",
+    "phase-1.1"
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
   "timepicker": {},
   "timezone": "",
   "title": "LLM Overview",

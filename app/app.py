@@ -74,9 +74,10 @@ def _executor_for(user_id: str):
     """One Agent per user-id, cached for the session.
 
     `@st.cache_resource` survives reruns within the Streamlit process so
-    we don't rebuild ChatOpenAI / AgentExecutor / Langfuse handler on
-    every keystroke. The Langfuse handler is encapsulated inside the
-    Agent — this layer doesn't touch it directly.
+    we don't rebuild ChatOpenAI / AgentExecutor on every keystroke. OTLP
+    tracing (Phase 2.2) is initialised at agent.py import time and
+    doesn't need re-binding per user; the user_id is stamped per-call via
+    `Traceloop.set_association_properties`.
     """
     return agent.build_executor(user_id)
 

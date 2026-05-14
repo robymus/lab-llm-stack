@@ -1,16 +1,21 @@
 # =============================================================================
 #  Agent app dependencies
 # -----------------------------------------------------------------------------
-#  Pinned. The langchain ↔ openai ↔ langfuse compatibility matrix is the
+#  Pinned. The langchain ↔ openai ↔ traceloop compatibility matrix is the
 #  brittlest part of this stack — bumping any of the three means re-testing
-#  that Langfuse traces still show the chain → llm → tool tree.
+#  that Langfuse traces still show the chain → llm → tool tree with httpx
+#  sub-spans intact.
 #
-#  ===== Why no traceloop-sdk / OpenLLMetry =====================
-#  Langfuse v2 doesn't expose an OTLP/HTTP ingestion endpoint — that was
-#  added in v3 (which requires ClickHouse, Redis, and Minio). The plan
-#  deliberately uses v2 for simplicity, so we use Langfuse's NATIVE
-#  LangChain callback handler instead. Same trace tree in the UI, just
-#  a different transport. If we ever upgrade to v3, we can revisit OTLP.
+#  ===== Tracing (Phase 2.2) =====================================
+#  The app emits OTLP/HTTP to the otel-collector via traceloop-sdk. That
+#  picks up auto-instrumentation for LangChain + the OpenAI client + httpx,
+#  giving us the full chain → llm → tool → httpx span tree. The collector
+#  then forwards to Langfuse v3.
+#
+#  Phase 1.2 used `langfuse` (v2 SDK) and its native LangChain callback
+#  because v2 didn't speak OTLP/HTTP. Phase 2.1 brought v3 online; Phase
+#  2.2 flipped the wire protocol back to OTLP, restoring the httpx sub-spans
+#  that the v2 callback path collapsed inside each tool span.
 # =============================================================================
 
 # --- UI -------------------------------------------------------------------
@@ -27,7 +32,22 @@ openai==1.54.3
 # --- Tool calls into mock-services ---------------------------------------
 httpx==0.27.2
 
-# --- Langfuse trace export (v2-compatible SDK) ---------------------------
-# v2.x SDK targets Langfuse-server v2.x. v3.x SDK targets v3-server.
-# Don't cross-mix.
-langfuse==2.60.0
+# --- OpenLLMetry / OTLP trace export -------------------------------------
+# traceloop-sdk auto-instruments LangChain + the OpenAI client. It does
+# NOT auto-instrument generic HTTP clients — `opentelemetry-instrumentation-httpx`
+# below adds httpx so the GET-to-mock-services sub-spans appear under
+# each tool span (the explicit Phase 2.2 exit criterion).
+#
+# Order in agent.py matters: `Traceloop.init(...)` BEFORE any
+# `from langchain...` / `from openai...` imports execute, then the httpx
+# instrumentor's `.instrument()` call BEFORE `from tools import ...`.
+traceloop-sdk==0.60.0
+opentelemetry-instrumentation-httpx==0.62b1
+# opentelemetry-instrumentation-langchain 0.60.x still calls
+# `wrap_function_wrapper(module=..., ...)` — that kwarg was removed in
+# wrapt 2.0. Without this pin the langchain instrumentor logs
+# "wrap_function_wrapper() got an unexpected keyword argument 'module'"
+# at startup and silently disables itself, leaving you with only the
+# openai auto-instrumentor (so the chain → tool tree disappears).
+# Revisit this pin when traceloop ships a wrapt-2 compatible release.
+wrapt==1.17.2

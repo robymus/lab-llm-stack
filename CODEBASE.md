@@ -7,20 +7,19 @@
 
 ## Current state
 
-**Phases 1.0 + 1.1 + 1.2 + 1.3 + 1.4 implemented.** Eleven services
-healthy under `docker compose up -d`: vLLM, LiteLLM, Langfuse (web +
-Postgres), DCGM exporter, node-exporter, cAdvisor, Prometheus, Grafana,
-mock-services, agent app. Streamlit chat → LangChain agent (5 tools)
-→ mock-services produces trace trees in Langfuse with chain/llm/tool
-spans, grouped by user_id. Phase 1.3 added the **trunks-based load
-tester** (`scripts/load.sh` with 7 profiles) and four ordered
-walkthrough docs. Phase 1.4 adds **CI + polish**:
-GitHub Actions workflow (yamllint, jq JSON validate, hadolint,
-`docker compose config -q`, ruff check + format, pytest), pre-commit
-config that mirrors CI, pyproject.toml/`.yamllint.yml`/`.hadolint.yaml`
-lint configs, unit tests under `app/tests/` (respx-mocked) and
-`mock-services/tests/` (FastAPI `TestClient`), the `VERSIONS.md` audit
-trail, and a reconciled `.env.example`.
+**Phases 1.0 + 1.1 + 1.2 + 1.3 + 1.4 + 2.0 + 2.1 + 2.2 implemented.**
+Sixteen services healthy under `docker compose up -d` (after running
+`scripts/pull-phase2-images.sh` once). The trace path now is:
+**Streamlit → agent → traceloop-sdk (OTLP/HTTP) → otel-collector →
+Langfuse v3**. The agent no longer holds Langfuse credentials — the
+`otel-collector` container does, via the `basicauth/langfuse` extension.
+Traces in Langfuse v3 now show the full chain → llm → tool → **httpx**
+sub-spans Phase 1.2 had to drop (v2 didn't speak OTLP), with the
+top-level `userId` field populated via the collector's
+`traceloop.association.properties.user_id → langfuse.user.id`
+attribute remapping. The LLM Overview dashboard gains two new panels
+(span throughput in vs. out; export failures + queue size) wired to
+the collector's own `/metrics`.
 
 Deviations from the plan along the way (documented inline + in PLAN/TODO):
 - Langfuse v2 doesn't speak OTLP → Langfuse-native LangChain callback
@@ -63,13 +62,19 @@ Deviations from the plan along the way (documented inline + in PLAN/TODO):
 | [scripts/preflight.sh](scripts/preflight.sh) | Verifies host has Docker, Compose, NVIDIA driver, container toolkit + registered runtime, ≥30 GB disk, and a `.env`. Reports whether the Langfuse public/secret keys are populated (Phase 1.2 readiness). |
 | [scripts/cleanup.sh](scripts/cleanup.sh) | Wipes the sandbox: stops containers, drops the network and all named volumes, removes pulled images. Destructive — confirms before acting. Flags: `-y`, `--keep-images`, `--keep-cache`, `--help`. |
 | [scripts/load.sh](scripts/load.sh) | Load tester driven by `trunks` (Rust port of vegeta — `cargo install trunks`). Seven profiles: smoke / short / decode-heavy / prefill-heavy / prefix-cache / mixed / saturation. Curated prompt sets (~40 prompts across categories) baked into the script; targets file + JSON payloads generated on the fly. Per-run binary + CSV under `/tmp/load-<profile>-<ts>/`. |
+| [scripts/pull-phase2-images.sh](scripts/pull-phase2-images.sh) | **Phase 2.0** — one-shot prefetch of every Phase 2 container image. Pulls Triton (~25 GB, longest pole), Langfuse v3 web + worker, ClickHouse alpine, Redis alpine, Minio, OTel Collector, Loki, Promtail. Checks ≥45 GB free on the docker root first; idempotent so re-runs only fetch what's missing. |
+
+### Services (live in 2.2)
+| Folder | Implementation status | Key files |
+| ------ | --------------------- | --------- |
+| [otel/](otel/) | **Phase 2.2** — collector service in compose, config + README. Routes OTLP/HTTP from the agent to Langfuse v3 with basicauth + batching + attribute remapping. | [otel/config.yaml](otel/config.yaml), [otel/README.md](otel/README.md) |
 
 ### Services (live in 1.0)
 | Folder | Implementation status | Key files |
 | ------ | --------------------- | --------- |
 | [vllm/](vllm/) | Service in compose, README done | [vllm/README.md](vllm/README.md) |
 | [litellm/](litellm/) | Service + config + README done | [litellm/config.yaml](litellm/config.yaml), [litellm/README.md](litellm/README.md) |
-| [langfuse/](langfuse/) | Two services in compose, README + env crib done | [langfuse/README.md](langfuse/README.md), [langfuse/.env.langfuse.example](langfuse/.env.langfuse.example) |
+| [langfuse/](langfuse/) | **Phase 2.1** — six services in compose (v3 ingest cluster: web + worker + db + clickhouse + redis + minio). README rewritten for v3 architecture, env crib updated. | [langfuse/README.md](langfuse/README.md), [langfuse/.env.langfuse.example](langfuse/.env.langfuse.example) |
 
 ### Services (live in 1.1)
 | Folder | Implementation status | Key files |
@@ -83,7 +88,7 @@ Deviations from the plan along the way (documented inline + in PLAN/TODO):
 | Folder | Implementation status | Key files |
 | ------ | --------------------- | --------- |
 | [mock-services/](mock-services/) | FastAPI app with 5 endpoints + `/metrics` + Prometheus scrape job + README + tests (1.4) | [mock-services/main.py](mock-services/main.py), [mock-services/Dockerfile](mock-services/Dockerfile), [mock-services/README.md](mock-services/README.md), [mock-services/tests/test_endpoints.py](mock-services/tests/test_endpoints.py), [mock-services/requirements-dev.txt](mock-services/requirements-dev.txt) |
-| [app/](app/) | Streamlit + LangChain agent + 5 tools + Langfuse `CallbackHandler` + README + tests (1.4) | [app/app.py](app/app.py), [app/agent.py](app/agent.py), [app/tools.py](app/tools.py), [app/Dockerfile](app/Dockerfile), [app/README.md](app/README.md), [app/tests/test_tools.py](app/tests/test_tools.py), [app/requirements-dev.txt](app/requirements-dev.txt) |
+| [app/](app/) | Streamlit + LangChain agent + 5 tools + tracing via **traceloop-sdk → OTLP** (Phase 2.2) + README + tests (1.4). Phase 1.2 used `langfuse.CallbackHandler`; Phase 2.2 swapped it for `Traceloop.init(...)` + `HTTPXClientInstrumentor` + `Traceloop.set_association_properties({"user_id": ...})`. | [app/app.py](app/app.py), [app/agent.py](app/agent.py), [app/tools.py](app/tools.py), [app/Dockerfile](app/Dockerfile), [app/README.md](app/README.md), [app/tests/test_tools.py](app/tests/test_tools.py), [app/requirements-dev.txt](app/requirements-dev.txt) |
 
 ### Walkthrough docs (live in 1.3)
 | File | What it covers |
@@ -128,14 +133,25 @@ host:4000 ──│   litellm    │  routes "qwen-chat" → vllm
             │ main-stable  │  /metrics/ (trailing slash!)
             └──────────────┘                Phase 2 swap point: litellm/config.yaml
 
-  --- Trace store -------------------------------------------------------
-            ┌──────────────┐
-            │ langfuse-db  │  postgres:16-alpine (no host port)
-            └──────┬───────┘
-                   ▼
-            ┌──────────────┐
-host:3001 ──│   langfuse   │  v2: trace UI + OTLP ingestion
-            └──────────────┘
+  --- Trace store (Phase 2.1 — Langfuse v3 cluster) ---------------------
+            ┌──────────────┐    ┌────────────────────┐    ┌──────────────┐
+            │ langfuse-db  │    │ langfuse-clickhouse│    │ langfuse-redis│
+            │ postgres-16  │    │ 24.10-alpine       │    │ 7-alpine      │
+            │ (metadata)   │    │ (spans, columnar)  │    │ (ingest queue)│
+            └──────┬───────┘    └─────────┬──────────┘    └──────┬───────┘
+                   │                      │                      │
+                   │            ┌─────────┴──────────┐           │
+                   │            │   langfuse-minio   │           │
+                   │            │   (S3 staging)     │           │
+                   │            └─────────┬──────────┘           │
+                   │                      │                      │
+                   └──┬─────────┬─────────┴─────────┬────────────┘
+                      ▼         ▼                   ▼
+              ┌──────────────┐                ┌──────────────────┐
+host:3001 ── │   langfuse   │                │ langfuse-worker  │
+             │ v3 (web/UI)  │ ─OTLP/HTTP─────│ drain Redis,     │
+             │ enqueue+S3   │  to /api/      │ insert into CH+PG │
+             └──────────────┘   public/otel  └──────────────────┘
 
   --- Observability plane (Phase 1.1) -----------------------------------
             ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
@@ -185,10 +201,28 @@ Phase 1.2 adds:
 - `OPENAI_API_BASE`, `MOCK_SERVICES_URL` — set in the app compose env, override the `.env` defaults (`.env` values are for running the app outside compose)
 
 Phase 1.4 cleanup: `LANGFUSE_AUTH_B64` and `OTEL_EXPORTER_OTLP_ENDPOINT` were
-removed from `.env.example` and `preflight.sh`. Both were leftovers from the
-originally-planned OpenLLMetry/OTLP path that Langfuse v2 doesn't support;
-nothing in the codebase has read them since the Phase 1.2 switch to the
-native Langfuse SDK. They would return only if we ever upgrade to Langfuse v3.
+removed from `.env.example` and `preflight.sh` (originally-planned OpenLLMetry/OTLP
+path that v2 didn't support). `OTEL_EXPORTER_OTLP_ENDPOINT` returns in Phase 2.2.
+
+Phase 2.2 adds:
+- `OTEL_EXPORTER_OTLP_ENDPOINT` — re-introduced (deleted in 1.4 cleanup).
+  Inside compose, `app` is hardcoded to `http://otel-collector:4318` in
+  the service env. The `.env` value is for host-side runs only.
+- `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf`, `OTEL_SERVICE_NAME=llm-sandbox-app`,
+  `TRACELOOP_METRICS_ENABLED=false` — set on the `app` service env block
+  in `docker-compose.yaml` (not in `.env`).
+- `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` — still in `.env`, but
+  now consumed by the `otel-collector` service (its `basicauth/langfuse`
+  extension), not by `app`.
+
+Phase 2.1 adds (all read via the `x-langfuse-env` YAML anchor in compose):
+- `CLICKHOUSE_PASSWORD` — Langfuse ClickHouse user `langfuse` password
+- `REDIS_PASSWORD` — Langfuse Redis `requirepass` + worker/web `REDIS_AUTH`
+- `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD` — Minio root creds, surfaced
+  to Langfuse as `LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID/_SECRET_ACCESS_KEY`
+- `LANGFUSE_ENCRYPTION_KEY` — 64 hex chars, required by v3 for column-
+  level encryption of integration creds. **Do not rotate after first write.**
+  Preflight validates shape (regex `^[0-9a-fA-F]{64}$`).
 
 ## Conventions worth knowing
 
@@ -218,10 +252,21 @@ native Langfuse SDK. They would return only if we ever upgrade to Langfuse v3.
   uncomment the four PROF_* lines in `dcgm/dcp-metrics-included.csv`.
 - **LiteLLM `/metrics` requires trailing slash** — handled in Prometheus
   scrape config; worth knowing if you ever poke it by hand.
-- **Langfuse v2 doesn't support OTLP/HTTP** — we use the native LangChain
-  callback handler instead. Side-effect: httpx sub-spans under tool spans
-  aren't visible in Langfuse (workaround: per-handler latency from
-  `mock-services/metrics` covers the same ground from a different angle).
+- **OTLP/HTTP** is reachable on Langfuse v3 at
+  `http://localhost:3001/api/public/otel/v1/traces` (401 without auth —
+  the otel-collector adds the basic-auth headers). The agent app now
+  pushes traces to `http://otel-collector:4318` via traceloop-sdk; the
+  collector forwards to Langfuse. Httpx sub-spans under each tool span
+  are visible in the Langfuse UI. The native `userId` field is
+  populated via the collector's `langfuse.user.id` attribute mapping.
+- **Tokens field on Generations reads 0/0/0** in Langfuse v3 — OpenLLMetry's
+  instrumentors (0.60.x) don't translate vLLM's returned `usage.*_tokens`
+  into the OTel `gen_ai.usage.*` attributes Langfuse reads. A LangChain-callback
+  bridge attempt didn't work (the OpenLLMetry span has already ended by
+  the time `on_llm_end` fires). Token counts are visible elsewhere: LiteLLM's
+  Prometheus `/metrics/` (`litellm_*_tokens_metric`), vLLM's `vllm:*_tokens_total`,
+  and the existing Grafana "Tokens / second" panel. Documented in
+  `app/agent.py`'s top-of-module comment and `app/README.md`.
 - **LiteLLM per-`end_user` Prometheus label** needs virtual API keys to
   actually split; for Phase 1 the per-user view lives in Langfuse, where
   `user_id`/`session_id` are first-class filters.

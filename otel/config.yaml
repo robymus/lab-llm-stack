@@ -1,0 +1,125 @@
+# =============================================================================
+#  OpenTelemetry Collector — config
+# -----------------------------------------------------------------------------
+#  Receives OTLP/HTTP from the agent app (and anything else that wants to
+#  push traces), batches it, and exports to Langfuse v3.
+#
+#  Why this exists (Phase 2.2):
+#    - The app no longer needs to know about Langfuse credentials. The
+#      `basicauth/langfuse` extension below holds them.
+#    - Future emitters (LiteLLM OTLP, vLLM OTLP, another backend) plug in
+#      by adding a receiver and/or exporter — no app changes.
+#    - The `batch` processor smooths small bursts of single-event POSTs
+#      into one HTTP call every 200 ms, which is gentler on Langfuse and
+#      keeps logs readable.
+#
+#  Convention: every component is named `<kind>/<purpose>` (the second
+#  half disambiguates if we ever need two of the same kind, e.g. two
+#  exporters to two trace stores).
+# =============================================================================
+
+receivers:
+  # OTLP receiver listens on both HTTP and gRPC. HTTP/:4318 is what the
+  # agent's traceloop-sdk pushes to; gRPC/:4317 is for anything else that
+  # prefers protobuf-over-h2 (only reachable inside the docker network —
+  # not exposed to the host).
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  # Batches spans into 200 ms / 8 KB chunks before exporting. 200 ms is the
+  # sweet spot for HTTP: short enough that a streamed-response trace lands
+  # in the UI ~half a second after the request completes, long enough to
+  # coalesce the 5-30 sub-spans a multi-tool agent turn produces into one
+  # network call.
+  batch:
+    timeout: 200ms
+    send_batch_size: 8192
+
+  # Tag every span with a `source` attribute. Useful for filtering once
+  # we have multiple emitters (Phase 2.5 will likely add LiteLLM's OTLP
+  # output behind the same collector); set explicitly even with one
+  # emitter so the convention is established.
+  #
+  # Also stamp Langfuse's `trace.tags` so every trace ends up tagged in
+  # the UI sidebar (the Phase 1.2 `tags=["llm-sandbox", "phase-1.2"]`
+  # equivalent — except now driven from the collector, so the app
+  # doesn't need to know about Langfuse tags). Stored as a JSON-encoded
+  # string per Langfuse's OTel ingest convention.
+  attributes/source:
+    actions:
+      - key: source
+        value: otel-collector
+        action: insert
+      - key: langfuse.trace.tags
+        value: '["llm-sandbox","phase-2.2"]'
+        action: insert
+
+  # Map traceloop's association properties onto Langfuse's native trace
+  # attributes. Without this, `user_id` ends up buried in
+  # `metadata.attributes.traceloop.association.properties.user_id` and
+  # Langfuse's top-level `userId` field stays null — meaning the UI's
+  # "filter by user" sidebar can't see it. Langfuse documents the
+  # special attribute names `langfuse.user.id` / `langfuse.session.id`
+  # for OTLP ingest; we upsert them from the traceloop equivalents.
+  attributes/langfuse_mapping:
+    actions:
+      - key: langfuse.user.id
+        from_attribute: traceloop.association.properties.user_id
+        action: upsert
+      - key: langfuse.session.id
+        from_attribute: traceloop.association.properties.session_id
+        action: upsert
+
+extensions:
+  # HTTP Basic auth credentials that the `otlphttp/langfuse` exporter below
+  # uses on every outbound request. Reads from the collector container's
+  # env — see docker-compose.yaml where LANGFUSE_PUBLIC_KEY /
+  # LANGFUSE_SECRET_KEY are passed in.
+  basicauth/langfuse:
+    client_auth:
+      username: ${env:LANGFUSE_PUBLIC_KEY}
+      password: ${env:LANGFUSE_SECRET_KEY}
+
+  # Health endpoint on :13133 used by docker-compose's healthcheck.
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+exporters:
+  # Primary destination: Langfuse v3's OTLP receiver. The `endpoint` is the
+  # base URL; the collector appends `/v1/traces` automatically. Basic auth
+  # uses the extension defined above.
+  otlphttp/langfuse:
+    endpoint: http://langfuse:3000/api/public/otel
+    auth:
+      authenticator: basicauth/langfuse
+
+  # Debug exporter: logs each batch to the collector's stdout at
+  # `verbosity: detailed`. Invaluable while Phase 2.2 is being shaken
+  # out — `docker compose logs otel-collector` and you *see* traces flow.
+  #
+  # **TODO (Phase 2.2 cleanup)**: remove this exporter (and its slot in
+  # the pipeline below) once the OTLP path is verified stable. Keeping
+  # it on permanently inflates collector log volume.
+  debug:
+    verbosity: detailed
+
+service:
+  extensions: [basicauth/langfuse, health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch, attributes/source, attributes/langfuse_mapping]
+      exporters: [otlphttp/langfuse, debug]
+
+  # The collector's own metrics — Prometheus scrapes this so we can plot
+  # batches sent, spans exported, queue depth, and refused requests on
+  # the LLM Overview dashboard. Default binding is 127.0.0.1:8888; override
+  # to 0.0.0.0 so a Prometheus job inside the network can reach it.
+  telemetry:
+    metrics:
+      address: 0.0.0.0:8888

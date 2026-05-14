@@ -13,8 +13,13 @@ and when it was last verified working.
 | ------- | ----- | ------------ | ------------- |
 | vllm-engine | `vllm/vllm-openai` | `v0.6.6` | 2026-05-12 — AWQ-Marlin kernel for Ada (8.9) stable here |
 | litellm | `ghcr.io/berriai/litellm` | `@sha256:6c82d338a60e…` (`main-stable` as of 2026-04-26) | 2026-05-13 — pinned by manifest digest, not tag |
-| langfuse-db | `postgres` | `16-alpine` | 2026-05-12 — Langfuse v2 migrations tested against PG 14-16 |
-| langfuse | `langfuse/langfuse` | `2.95.11` | 2026-05-13 — latest v2.x at pin time |
+| langfuse-db | `postgres` | `16-alpine` | 2026-05-12 — Langfuse v3 migrations tested against PG 14-17 |
+| langfuse | `langfuse/langfuse` | `3.174.1` | 2026-05-14 — Phase 2.1 bump; latest v3 at pin time, replaces v2.95.11 |
+| langfuse-worker | `langfuse/langfuse-worker` | `3.174.1` | 2026-05-14 — Phase 2.1; must match the web image's minor |
+| langfuse-clickhouse | `clickhouse/clickhouse-server` | `24.10-alpine` | 2026-05-14 — Phase 2.1; on Langfuse v3's tested compatibility list |
+| langfuse-redis | `redis` | `7-alpine` | 2026-05-14 — Phase 2.1; queue between web + worker |
+| langfuse-minio | `minio/minio` | `RELEASE.2024-11-07T00-52-20Z` | 2026-05-14 — Phase 2.1; S3-compatible event-batch staging |
+| otel-collector | `otel/opentelemetry-collector-contrib` | `0.114.0` | 2026-05-14 — Phase 2.2; contrib distro for basicauth + attributes processors. Distroless image — no shell/wget, hence no compose healthcheck |
 | dcgm-exporter | `nvcr.io/nvidia/k8s/dcgm-exporter` | `3.3.9-3.6.1-ubuntu22.04` | 2026-05-12 — works with driver 580.x on Ada |
 | node-exporter | `prom/node-exporter` | `v1.8.2` | 2026-05-12 |
 | cadvisor | `gcr.io/cadvisor/cadvisor` | `v0.49.2` | 2026-05-12 — `accelerator` metric class already removed in this release |
@@ -36,9 +41,11 @@ Pinned in:
 - `app/requirements.txt` (runtime) + `app/requirements-dev.txt` (test + lint)
 - `mock-services/requirements.txt` (runtime) + `mock-services/requirements-dev.txt` (test + lint)
 
-The langchain ⇆ openai ⇆ langfuse compatibility matrix is the brittlest part
-of the stack; bumping any of those three is a separate verification pass
-against a live Langfuse trace (see `app/README.md`).
+The langchain ⇆ openai ⇆ traceloop-sdk compatibility matrix is the brittlest
+part of the stack; bumping any of those three is a separate verification pass
+against a live Langfuse trace (see `app/README.md`). Phase 2.2 swapped the
+v2 `langfuse` SDK for `traceloop-sdk==0.60.0`, which auto-instruments
+langchain + openai + httpx and pushes OTLP/HTTP via the otel-collector.
 
 ## GitHub Actions
 

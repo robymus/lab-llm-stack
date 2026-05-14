@@ -31,56 +31,74 @@ All three at once — that's the correlation lesson.
 | File | Purpose |
 | ---- | ------- |
 | [app.py](app.py) | Streamlit UI: user-id capture, chat history, agent invocation |
-| [agent.py](agent.py) | LangChain agent + Langfuse `CallbackHandler` wiring |
+| [agent.py](agent.py) | LangChain agent + OpenLLMetry/OTLP tracing init |
 | [tools.py](tools.py) | The five `@tool`-decorated functions hitting mock-services |
 | [Dockerfile](Dockerfile) | python:3.11-slim + the dep stack |
 | [requirements.txt](requirements.txt) | Pinned dependency set |
 
-## The tracing path — and why it's not OTLP
+## The tracing path (Phase 2.2 — OTLP restored)
 
-The plan originally specified OpenTelemetry/OTLP via `traceloop-sdk` →
-Langfuse. **It turned out Langfuse v2 doesn't accept OTLP/HTTP** — that's
-a v3-only feature. So instead we use Langfuse's native LangChain
-`CallbackHandler`, which:
+```
+   app                              otel-collector                 langfuse v3
+   ─────                            ─────────────                  ───────────
+   traceloop-sdk                       :4318  ──HTTP──▶              :3000
+   auto-instruments                  (batch +                     (OTLP receiver
+   langchain +                        attribute                    on /api/public/
+   openai +                           processors)                   otel/v1/traces)
+   httpx
+            ──OTLP/HTTP──▶                       ──OTLP/HTTP──▶
+            (no Langfuse                         (Basic auth via
+             knowledge here)                      basicauth/langfuse
+                                                  extension)
+```
 
-- Hooks into LangChain's `on_*_start`/`on_*_end` events.
-- Batches and ships them to Langfuse's standard ingestion API.
-- Captures the same chain/llm/tool tree visible in the UI.
+The agent app emits plain OTLP/HTTP. The
+[`otel-collector`](../otel/) container holds the Langfuse credentials and
+forwards. Three things this buys us:
 
-What we lose: the httpx sub-spans that OpenLLMetry would have produced
-under each tool span (one extra layer of detail). Workaround:
-[mock-services](../mock-services/) exposes its own Prometheus `/metrics`
-with per-handler latency histograms, so the network round-trip is
-observable, just through a different surface.
+- **httpx sub-spans are back.** Each tool span has its `httpx.GET` child
+  underneath. Phase 1.2's Langfuse v2 callback path collapsed those.
+- **No Langfuse knowledge in the app.** Swap the trace backend (Tempo,
+  Jaeger, Honeycomb…) by editing only `otel/config.yaml` — `app/agent.py`
+  doesn't change.
+- **Batching out of the app's hot path.** The collector coalesces sub-200 ms
+  bursts of single-span POSTs into one network call.
 
-What would unlock the original plan: upgrading to Langfuse v3 (deferred
-— see [PLAN §5.7](../.plans/llm-sandbox-PLAN.md)).
+Phase 1.2 used Langfuse's native LangChain `CallbackHandler` (v2 didn't
+speak OTLP/HTTP). Phase 2.1 brought v3 online; 2.2 flipped the wire
+protocol. The trace tree in the UI is the same shape, plus one extra
+layer of `httpx.*` spans.
 
 ## Configuration walkthrough
 
 ### [agent.py](agent.py)
 
-The whole agent + Langfuse machinery is encapsulated as an `Agent` class
-bound to one `user_id`. App code only sees `executor.chat(input, history)` —
-the Langfuse `CallbackHandler` is private to `Agent` and never crosses the
-module boundary.
+The agent + tracing machinery is encapsulated as an `Agent` class bound
+to one `user_id`. App code only sees `executor.chat(input, history)`.
 
-Three rules that *are* worth understanding (all inside `Agent.__init__` /
-`Agent.chat`):
+Three rules that *are* worth understanding:
 
-1. **One handler per user, with `user_id == session_id`.** Both fields
-   appear as first-class filters in the Langfuse UI; using the same value
-   for both makes "everything Robert did" one filter, not two.
-2. **`ChatOpenAI` gets both** `default_headers={"X-User-Id": user_id}` (HTTP
+1. **`Traceloop.init(...)` runs at module-import time, BEFORE any
+   `from langchain... import ...` lines.** OpenLLMetry's
+   auto-instrumentors wrap classes as they're imported; flipping that
+   order silently disables them. The `# noqa: E402` comments on the
+   framework imports document the deliberate ordering.
+2. **Per-turn identity via `Traceloop.set_association_properties`.**
+   Stamping `user_id` and `session_id` at the top of each `chat()` call
+   propagates them onto every span emitted within that thread's context.
+   Surfaces in Langfuse v3 as
+   `metadata.traceloop.association.properties.user_id` and is filterable
+   from the UI sidebar.
+3. **`ChatOpenAI` gets both** `default_headers={"X-User-Id": user_id}` (HTTP
    header, forwarded by LiteLLM to vLLM) and `model_kwargs={"user": user_id}`
    (OpenAI's standard `user` body field). Different downstream tools
    surface different ones; the body field is what LiteLLM's per-`end_user`
-   Prometheus label will use once virtual API keys are wired up.
-3. **Callbacks are passed via `invoke(config={"callbacks": [...]})`**, not
-   via `AgentExecutor(callbacks=[...])`. In LangChain 0.3+ the former
-   propagates through every child runnable; the latter only fires at the
-   outermost span (so you'd see *only* the `AgentExecutor` span in
-   Langfuse and miss the chain → llm → tool tree underneath).
+   Prometheus label will use once virtual API keys are wired up (Phase 2.4).
+
+No callbacks pass through `invoke()` anymore — traceloop's
+auto-instrumentation hooks `Chain.invoke` / `BaseChatModel.invoke`
+directly, so the chain → llm → tool tree appears in the UI without any
+LangChain-callback plumbing on our side.
 
 ### [tools.py](tools.py)
 
@@ -107,30 +125,36 @@ description, which drives selection. Keep them tight.
   `agent.to_lc_history`.
 - **Caching** — `@st.cache_resource` on the executor builder. Streamlit
   reruns the entire script on each keystroke; the cache avoids
-  rebuilding the chain on every input.
-- **Flushing** — `handler.flush()` after each invoke. Langfuse batches
-  spans by default; flushing immediately gets the trace into the UI
-  within ~1 s, which makes iterating worthwhile.
+  rebuilding the chain on every input. The tracing pipeline is
+  initialised once at module import and reused.
+- **No explicit flushing** — the OTel SDK's BatchSpanProcessor exports on
+  its own (200 ms in the collector + ~5 s SDK-side max). For local
+  debugging where you want the trace visible *immediately*, set
+  `OTEL_BSP_SCHEDULE_DELAY=100` (ms) on the `app` service or pass
+  `disable_batch=True` to `Traceloop.init` (we already do — the
+  collector's `batch` processor handles the coalescing instead).
 
-## Trace tree (what to expect in Langfuse)
+## Trace tree (what to expect in Langfuse v3)
 
 A multi-tool prompt like *"umbrella in London and NVDA price?"* produces
-this structure:
+this structure (the `httpx.GET` rows are new in Phase 2.2 — they were
+missing in the Phase 1.2 v2-callback tree):
 
 ```
 AgentExecutor                      [span]   trace root
 ├── RunnableSequence               [span]   first LLM call setup
-│   ├── RunnableAssign<...>        [span]   variable assignment
-│   │   └── RunnableParallel<...>  [span]   parallel runnables
-│   │       └── RunnableLambda     [span]   user-supplied function
 │   ├── ChatPromptTemplate         [span]   prompt rendering
 │   ├── ChatOpenAI                 [GEN]    LLM call → returns tool calls
+│   │   └── HTTP POST              [span]   httpx hits litellm:4000
 │   └── ToolsAgentOutputParser     [span]   parses tool calls from response
 ├── get_current_weather            [span]   tool 1
+│   └── HTTP GET                   [span]   httpx hits mock-services:9000  ◀── NEW
 ├── get_stock_price                [span]   tool 2
+│   └── HTTP GET                   [span]   httpx hits mock-services:9000  ◀── NEW
 └── RunnableSequence               [span]   second LLM call (with tool results)
     ├── ...                                  same shape as above
     └── ChatOpenAI                 [GEN]    final synthesis
+        └── HTTP POST              [span]   httpx hits litellm:4000        ◀── NEW
 ```
 
 `GEN` (Generation) is Langfuse's first-class type for LLM calls — it
@@ -152,21 +176,50 @@ ex = agent.build_executor("script-user")
 print(ex.chat("What is the weather in Tokyo?", []))
 PY
 
-# Verify the trace landed
+# Watch traces flow through the collector while you drive load
+docker compose logs --tail=20 -f otel-collector | grep -E 'TracesExporter|spans'
+
+# Verify the trace landed in Langfuse
 LF_PK=$(grep ^LANGFUSE_PUBLIC_KEY .env | cut -d= -f2)
 LF_SK=$(grep ^LANGFUSE_SECRET_KEY .env | cut -d= -f2)
 curl -s -u "$LF_PK:$LF_SK" "http://localhost:3001/api/public/traces?limit=3&userId=script-user" | jq '.data[].name'
 ```
+
+## Known limitation: Tokens field on Generations reads 0/0/0
+
+vLLM returns `usage.prompt_tokens` / `completion_tokens` on every
+chat-completion; LiteLLM passes them through unchanged. But OpenLLMetry's
+instrumentors (0.60.x) don't translate them into the
+`gen_ai.usage.input_tokens` / `output_tokens` OTel attributes that
+Langfuse v3 reads to populate its native `usage` field. Result: the
+Tokens column on every Generation span in the Langfuse UI shows 0/0/0.
+
+We tried a LangChain-callback bridge that reads `llm_output.token_usage`
+and re-stamps it via the OTel API. It doesn't work — by the time
+LangChain's `on_llm_end` fires, OpenLLMetry has already ended the
+Generation span, and `set_attribute` no-ops on a finished span.
+
+Token counts ARE observable through other surfaces today:
+
+| Surface | Series / panel |
+| ------- | -------------- |
+| LiteLLM `/metrics/` | `litellm_total_tokens`, `litellm_input_tokens_metric`, `litellm_output_tokens_metric` |
+| vLLM `/metrics` | `vllm:prompt_tokens_total`, `vllm:generation_tokens_total` |
+| Grafana | "Tokens / second" panel on the LLM Overview dashboard |
+
+Revisit this when OpenLLMetry's openai instrumentor ships proper usage
+extraction for chat-completions-via-langchain-openai (tracking upstream).
 
 ## Where to look when it breaks
 
 | Symptom | Likely cause | Fix |
 | ------- | ------------ | --- |
 | Streamlit shows error: "auto tool choice requires --enable-auto-tool-choice" | vLLM is missing the tool-calling flags | Confirm `vllm-engine.command` has `--enable-auto-tool-choice` + `--tool-call-parser hermes` |
-| Trace contains only the AgentExecutor span | Callback passed via constructor, not invoke config | Move to `invoke(config={"callbacks": [handler]})` |
+| Trace contains only the agent root span, no children | `Traceloop.init` ran AFTER the langchain import (auto-instrumentor missed it) | Confirm `Traceloop.init(...)` is the very first runtime statement in agent.py, before any framework imports |
+| No `httpx.*` spans under tool spans | Either traceloop-sdk not installed, or httpx import beat the init | Same fix as above — agent.py's import ordering is load-bearing |
 | "Connection refused" to litellm:4000 | App started before gateway healthy | `depends_on: litellm: service_healthy` handles this; if you bypassed compose, wait for healthcheck |
-| Per-user filter in Langfuse shows nothing | `user_id` not set on CallbackHandler | Check `_build_handler()` — both `user_id` and `session_id` are set |
-| Tokeniser warning about `qwen-chat` in logs | OpenLLMetry tries to count tokens with tiktoken | Harmless — we don't use OpenLLMetry anymore; if you see this, agent.py was somehow loaded with old code |
+| Per-user filter in Langfuse shows nothing | `user_id` association property not stamped | Check `Agent.chat` calls `Traceloop.set_association_properties({"user_id": ...})` before invoking |
+| `otel-collector` logs `401 Unauthorized` on every batch | `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` in `.env` don't match Langfuse's UI | Re-copy from Project Settings → API Keys, `docker compose restart otel-collector` |
 | `flaky_call` always succeeds | Wrong seed | seed `a`/`c`/`f` fail; `b`/`d`/`e` succeed (md5 first-byte < 76 fails) |
 
 ## Direct links
@@ -179,7 +232,9 @@ curl -s -u "$LF_PK:$LF_SK" "http://localhost:3001/api/public/traces?limit=3&user
 ## What's next
 
 - Phase 1.3 walkthrough docs cite specific traces produced here.
-- Phase 1.4 adds `tests/test_tools.py` mocking `httpx` (via `respx`) so
+- Phase 1.4 added `tests/test_tools.py` mocking `httpx` (via `respx`) so
   changes to the tools don't silently break the agent.
-- If we ever upgrade to Langfuse v3, swap `langfuse.callback.CallbackHandler`
-  back to `traceloop-sdk` and post traces via OTLP/HTTP for vendor-neutrality.
+- Phase 2.2 (this phase) restored OTLP, completing the vendor-neutral
+  tracing path the original PLAN called for. Next on the path: Phase 2.4
+  adds per-tenant virtual API keys so the `end_user` Prometheus label
+  populates alongside the trace's `user_id` association property.

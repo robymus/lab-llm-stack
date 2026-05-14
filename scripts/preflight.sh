@@ -105,14 +105,19 @@ fi
 
 # ---------------------------------------------------------------------------
 section "Disk space"
-# Plan §9 calls for ~30 GB free. We measure on the docker root (where images
-# land), not the project dir — they're usually the same volume but not always.
+# Phase 1 needed ~30 GB. Phase 2 adds another ~15 GB (Triton + CH + Minio +
+# Loki + extra images) and the plan calls out ≥ 45 GB free in §7. We measure
+# on the docker root (where images land), not the project dir — they're
+# usually the same volume but not always.
 docker_root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)"
 free_gb="$(df -BG "$docker_root" 2>/dev/null | awk 'NR==2 {gsub("G","",$4); print $4}')"
-if [ -n "$free_gb" ] && [ "$free_gb" -ge 30 ]; then
-    ok "${free_gb} GB free on $docker_root (≥ 30 GB)"
+if [ -n "$free_gb" ] && [ "$free_gb" -ge 45 ]; then
+    ok "${free_gb} GB free on $docker_root (≥ 45 GB — Phase 2 ready)"
+elif [ -n "$free_gb" ] && [ "$free_gb" -ge 30 ]; then
+    warn "${free_gb} GB free on $docker_root — Phase 1 OK, Phase 2 plan asks for ≥ 45 GB"
+    hint "Triton + Langfuse v3 backing stores + Loki together need ~15 GB headroom"
 elif [ -n "$free_gb" ]; then
-    fail "only ${free_gb} GB free on $docker_root — plan needs ≥ 30 GB"
+    fail "only ${free_gb} GB free on $docker_root — Phase 1 plan needs ≥ 30 GB"
     hint "free up disk or move docker data dir"
 else
     warn "could not determine free space on $docker_root"
@@ -134,6 +139,37 @@ if [ -f "$ENV_FILE" ]; then
     else
         warn "LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY empty"
         hint "needed for Phase 1.2 — create them in the Langfuse UI after first start"
+    fi
+
+    # ---------- Phase 2.1 — Langfuse v3 backing-store credentials ----------
+    # These are required at compose-up time (the services read them as env).
+    # Strictly speaking compose substitutes blank defaults and warns, but
+    # leaving them empty means everything inside the network is unauthenticated
+    # and Langfuse won't start without ENCRYPTION_KEY.
+    missing=()
+    for var in CLICKHOUSE_PASSWORD REDIS_PASSWORD MINIO_ROOT_USER MINIO_ROOT_PASSWORD LANGFUSE_ENCRYPTION_KEY; do
+        val="$(grep -E "^${var}=" "$ENV_FILE" | cut -d= -f2-)"
+        if [ -z "$val" ]; then
+            missing+=("$var")
+        fi
+    done
+    if [ "${#missing[@]}" -eq 0 ]; then
+        ok "Phase 2.1 Langfuse v3 env vars set (CH/Redis/Minio creds + ENCRYPTION_KEY)"
+    else
+        warn "Phase 2.1 env vars missing: ${missing[*]}"
+        hint "set them in .env — defaults are in .env.example; generate ENCRYPTION_KEY with:"
+        hint "  openssl rand -hex 32"
+    fi
+
+    # ENCRYPTION_KEY must be 64 hex chars. Catch typos early.
+    enc="$(grep -E '^LANGFUSE_ENCRYPTION_KEY=' "$ENV_FILE" | cut -d= -f2-)"
+    if [ -n "$enc" ]; then
+        if [[ "$enc" =~ ^[0-9a-fA-F]{64}$ ]]; then
+            ok "LANGFUSE_ENCRYPTION_KEY shape OK (64 hex chars)"
+        else
+            fail "LANGFUSE_ENCRYPTION_KEY is set but not 64 hex chars (got ${#enc})"
+            hint "regenerate:  openssl rand -hex 32"
+        fi
     fi
 else
     fail ".env missing"

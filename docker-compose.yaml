@@ -29,6 +29,53 @@ name: llm-stack   # explicit project name; otherwise compose derives it from
                   # differently-named folder.
 
 # ---------------------------------------------------------------------------
+#  Shared env blocks (YAML anchors, Phase 2.1)
+# ---------------------------------------------------------------------------
+#  Langfuse v3 splits ingest across a `langfuse` web container and a
+#  `langfuse-worker` container. Both consume the same env block — DB +
+#  ClickHouse + Redis + Minio (S3) + NextAuth + crypto. We define it once
+#  here and merge it into both services with `<<: *langfuse-env` so the
+#  pair can't drift. `x-` keys are ignored by Compose at the top level.
+x-langfuse-env: &langfuse-env
+  # PostgreSQL — primary metadata store (carries over from v2).
+  DATABASE_URL: postgresql://langfuse:${LANGFUSE_DB_PASSWORD}@langfuse-db:5432/langfuse
+  # ClickHouse — events + observations (new in v3). Two URLs: the HTTP one
+  # for runtime queries, the native one for schema migrations on startup.
+  CLICKHOUSE_URL: http://langfuse-clickhouse:8123
+  CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse-clickhouse:9000
+  CLICKHOUSE_USER: langfuse
+  CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+  # We run a single-node ClickHouse (no Zookeeper). By default the migrator
+  # creates `ON CLUSTER default ... ReplicatedMergeTree` tables, which fail
+  # with "There is no Zookeeper configuration". Setting this to `false`
+  # makes the migrator use plain MergeTree — correct for single-node.
+  CLICKHOUSE_CLUSTER_ENABLED: "false"
+  # Redis — ingest queue between web (enqueue) and worker (dequeue).
+  REDIS_HOST: langfuse-redis
+  REDIS_PORT: "6379"
+  REDIS_AUTH: ${REDIS_PASSWORD}
+  # Minio (S3-compatible) — Langfuse batches incoming events into objects
+  # and stages them through S3 before ClickHouse insertion. `auto` is NOT
+  # an accepted region; use a real one (the AWS SDK still validates the
+  # string even when the endpoint is Minio).
+  LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+  LANGFUSE_S3_EVENT_UPLOAD_REGION: us-east-1
+  LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+  LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+  LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://langfuse-minio:9000
+  LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+  LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+  # NextAuth (session signing) + at-rest encryption.
+  NEXTAUTH_URL: http://localhost:3001
+  NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
+  SALT: ${LANGFUSE_SALT}
+  # New in v3: a separate 64-hex-char key for column-level encryption of
+  # sensitive fields (API keys, integrations). Once data is written you
+  # MUST keep this stable — rotating it makes existing rows unreadable.
+  ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY}
+  TELEMETRY_ENABLED: "false"
+
+# ---------------------------------------------------------------------------
 #  Networks
 # ---------------------------------------------------------------------------
 #  Single bridge network. Container DNS resolves service names to internal
@@ -45,12 +92,18 @@ networks:
 #  here. We deliberately avoid bind-mounting into the repo for state dirs —
 #  it creates permission headaches and pollutes git status.
 volumes:
-  hf-cache:           # HuggingFace model cache shared across vLLM restarts;
-                      # downloading Qwen2.5-3B-AWQ takes ~2 GB / a few minutes.
-  langfuse-pg-data:   # Langfuse's Postgres data dir.
-  prometheus-data:    # Prometheus TSDB (added in Phase 1.1; declared now so
-                      # the file stays stable as we expand).
-  grafana-data:       # Grafana sqlite + plugin cache (Phase 1.1).
+  hf-cache:                  # HuggingFace model cache shared across vLLM restarts;
+                             # downloading Qwen2.5-3B-AWQ takes ~2 GB / a few minutes.
+  langfuse-pg-data:          # Langfuse's Postgres data dir (metadata).
+  langfuse-clickhouse-data:  # Phase 2.1: ClickHouse event store for Langfuse v3.
+  langfuse-redis-data:       # Phase 2.1: Redis AOF/RDB (queue is transient,
+                             # but enabling persistence avoids losing in-flight
+                             # events across a `docker compose restart`).
+  langfuse-minio-data:       # Phase 2.1: Minio (S3) blob store for batched
+                             # event uploads on the way to ClickHouse.
+  prometheus-data:           # Prometheus TSDB (added in Phase 1.1; declared
+                             # now so the file stays stable as we expand).
+  grafana-data:              # Grafana sqlite + plugin cache (Phase 1.1).
 
 # ---------------------------------------------------------------------------
 #  Services
@@ -238,36 +291,168 @@ services:
       retries: 10
 
   # =========================================================================
-  #  Langfuse v2 web app
+  #  Langfuse ClickHouse (Phase 2.1) — events + observations store
   # -------------------------------------------------------------------------
-  #  Hosts the UI, the API for the SDK, AND the OTLP HTTP ingestion endpoint
-  #  used by OpenLLMetry in Phase 1.2. Single container, no worker — that's
-  #  the simplification v3 trades away in exchange for ClickHouse-backed
-  #  analytics.
+  #  v3 moves the high-cardinality trace data out of Postgres and into
+  #  ClickHouse, where columnar storage makes the "scan a billion spans"
+  #  queries fast. Internal-only — the worker writes here, the web app reads.
+  #
+  #  The alpine variant keeps the image small (~700 MB) and is fine for a
+  #  sandbox-scale data volume; for production you'd want the standard image
+  #  (zstd-bundled, slightly larger but with more codecs).
+  # =========================================================================
+  langfuse-clickhouse:
+    image: clickhouse/clickhouse-server:24.10-alpine
+    container_name: langfuse-clickhouse
+    restart: unless-stopped
+
+    # 101:101 is the `clickhouse` user/group baked into the upstream image.
+    # The official Langfuse compose sets this explicitly to make the volume
+    # files owned by the right uid when mounted on host filesystems that
+    # care about ownership (most do).
+    user: "101:101"
+
+    environment:
+      CLICKHOUSE_DB: langfuse
+      CLICKHOUSE_USER: langfuse
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+
+    volumes:
+      - langfuse-clickhouse-data:/var/lib/clickhouse
+
+    networks:
+      - llm-stack
+
+    # No host ports — only the langfuse-web and langfuse-worker containers
+    # reach this. If you need to poke at it interactively:
+    #   docker compose exec langfuse-clickhouse clickhouse-client \
+    #     --user langfuse --password "$CLICKHOUSE_PASSWORD" --database langfuse
+
+    healthcheck:
+      # ClickHouse binds to 0.0.0.0:8123 (IPv4 only) by default; alpine's
+      # wget tries the `localhost` AAAA record first and gets a connection
+      # refused on ::1 even though IPv4 is happy. Use 127.0.0.1 explicitly.
+      # /ping returns 200 once the HTTP listener is up; the native-protocol
+      # listener on :9000 comes up a moment later but the migration runner
+      # on the web side waits for it on its own.
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:8123/ping || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # =========================================================================
+  #  Langfuse Redis (Phase 2.1) — ingest queue
+  # -------------------------------------------------------------------------
+  #  Sits between the web app (which buffers a few-KB event blob per request)
+  #  and the worker (which drains the queue and writes to CH/Postgres/Minio).
+  #  Decoupling these two means a slow ClickHouse insert won't back-pressure
+  #  the trace-receive endpoint — that's the whole reason v3 exists.
+  # =========================================================================
+  langfuse-redis:
+    image: redis:7-alpine
+    container_name: langfuse-redis
+    restart: unless-stopped
+
+    # `requirepass` makes auth mandatory for every command. We thread the
+    # password in through an env var so the healthcheck below can reuse it
+    # without baking it into the test string.
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+
+    # `noeviction` mirrors the Langfuse-recommended Redis policy — the queue
+    # is durable; we want OOM errors over silent dropped events.
+    command:
+      - sh
+      - -c
+      - 'exec redis-server --requirepass "$$REDIS_PASSWORD" --maxmemory-policy noeviction --appendonly yes'
+
+    volumes:
+      - langfuse-redis-data:/data
+
+    networks:
+      - llm-stack
+
+    healthcheck:
+      # Compose escapes `$$` to `$`, so the shell inside the container sees
+      # `$REDIS_PASSWORD` which is the env var we set above. `--no-auth-warning`
+      # suppresses the stderr nag about passing -a on the command line.
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  # =========================================================================
+  #  Langfuse Minio (Phase 2.1) — S3-compatible blob store
+  # -------------------------------------------------------------------------
+  #  Langfuse v3 stages incoming event batches as S3 objects before the
+  #  worker inserts them into ClickHouse. Using Minio (instead of LocalStack
+  #  or a real AWS bucket) keeps the sandbox self-contained.
+  #
+  #  Bucket creation: the official image doesn't auto-create buckets, but
+  #  Langfuse's S3 client doesn't create them either — it expects the bucket
+  #  to exist. We pre-create it via the entrypoint trick from the upstream
+  #  Langfuse compose: `mkdir -p /data/<bucket>` before `minio server` runs.
+  # =========================================================================
+  langfuse-minio:
+    image: minio/minio:RELEASE.2024-11-07T00-52-20Z
+    container_name: langfuse-minio
+    restart: unless-stopped
+
+    entrypoint: sh
+    command:
+      - -c
+      - 'mkdir -p /data/langfuse && exec minio server --address ":9000" --console-address ":9001" /data'
+
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+
+    volumes:
+      - langfuse-minio-data:/data
+
+    networks:
+      - llm-stack
+
+    # No host ports by default — the web console on 9001 is a debugging
+    # nicety we don't need wired up unless you want to poke around at
+    # bucket contents. Uncomment if you do:
+    #   ports:
+    #     - "9091:9001"
+
+    healthcheck:
+      # The image bundles the `mc` CLI; `mc ready local` uses the bundled
+      # `local` alias to self-check the API endpoint.
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  # =========================================================================
+  #  Langfuse v3 web app  (Phase 2.1)
+  # -------------------------------------------------------------------------
+  #  Replaces the Phase 1 v2 single-container deployment. v3 splits ingest
+  #  across this `langfuse` web container and the `langfuse-worker` below.
+  #  The web container handles UI, API, and OTLP receive; everything that
+  #  actually inserts into ClickHouse runs in the worker.
+  #
+  #  v3 brings OTLP/HTTP at /api/public/otel/v1/traces back online — the
+  #  hook Phase 2.2 (OpenLLMetry + OTel Collector) plugs into.
   # =========================================================================
   langfuse:
-    # Pinned to a specific v2.x minor — `:2` is a moving tag that would auto-
-    # adopt new minors and could subtly change behaviour mid-investigation.
-    # See VERSIONS.md for what was verified at this pin.
-    image: langfuse/langfuse:2.95.11
+    # Pinned to a specific v3 minor. The `:3` rolling tag would auto-adopt
+    # new minors and risk a schema migration mid-investigation; the explicit
+    # pin keeps the bring-up reproducible. See VERSIONS.md for the bump
+    # procedure.
+    image: langfuse/langfuse:3.174.1
     container_name: langfuse
     restart: unless-stopped
 
+    # Merge the shared anchor in — see x-langfuse-env at the top of the file.
     environment:
-      # Connection to the Postgres above. Use the service name as host —
-      # no host port is published, so this is the only way to reach it.
-      DATABASE_URL: postgresql://langfuse:${LANGFUSE_DB_PASSWORD}@langfuse-db:5432/langfuse
-      # NextAuth expects to know its own external URL. We publish on 3001
-      # to avoid colliding with Grafana on 3000.
-      NEXTAUTH_URL: http://localhost:3001
-      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
-      SALT: ${LANGFUSE_SALT}
-      # Disable Langfuse's anonymous usage telemetry — this is a learning
-      # sandbox, no need to ship pings out.
-      TELEMETRY_ENABLED: "false"
-      # Phase 1.2 needs OTLP enabled; it's on by default in v2 but explicit
-      # documentation is cheap.
-      LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "true"
+      <<: *langfuse-env
 
     ports:
       - "3001:3000"                          # host 3001 → container 3000 (avoids Grafana clash)
@@ -278,20 +463,113 @@ services:
     depends_on:
       langfuse-db:
         condition: service_healthy
+      langfuse-clickhouse:
+        condition: service_healthy
+      langfuse-redis:
+        condition: service_healthy
+      langfuse-minio:
+        condition: service_healthy
 
-    # Langfuse v2 ships Next.js in "standalone" mode, which binds the HTTP
-    # listener to the container's own hostname/IP (e.g. 172.20.0.4:3000)
-    # rather than 0.0.0.0:3000. Result: from inside the container,
-    # `localhost:3000` and `127.0.0.1:3000` are refused; only the
-    # container-hostname (or its IP) works. From the host this is hidden
-    # because we publish 3001:3000, so external traffic still arrives fine.
-    # `$(hostname)` resolves via /etc/hosts to the bound IP at check time.
+    # The v3 image still ships Next.js in standalone mode (binds to the
+    # container's hostname/IP rather than 0.0.0.0). Same `$(hostname)`
+    # workaround as v2 — see the Phase 1 comment for the long-form
+    # explanation. `start_period` is generous because the first run also
+    # runs Prisma migrations against Postgres AND ClickHouse schema migrations.
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://$(hostname):3000/api/public/health > /dev/null"]
       interval: 10s
       timeout: 5s
       retries: 10
-      start_period: 30s
+      start_period: 120s
+
+  # =========================================================================
+  #  Langfuse v3 worker  (Phase 2.1)
+  # -------------------------------------------------------------------------
+  #  Drains the Redis queue, reads the staged S3 object, inserts rows into
+  #  ClickHouse and metadata into Postgres. No external traffic — all comms
+  #  are inside the network.
+  # =========================================================================
+  langfuse-worker:
+    image: langfuse/langfuse-worker:3.174.1
+    container_name: langfuse-worker
+    restart: unless-stopped
+
+    environment:
+      <<: *langfuse-env
+
+    networks:
+      - llm-stack
+
+    # No published port — the worker exposes its own /api/health on 3030
+    # but only inside the network. We don't depend on the web container
+    # being healthy; both wait on the same backing services and may come
+    # up in either order.
+    depends_on:
+      langfuse-db:
+        condition: service_healthy
+      langfuse-clickhouse:
+        condition: service_healthy
+      langfuse-redis:
+        condition: service_healthy
+      langfuse-minio:
+        condition: service_healthy
+
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://$(hostname):3030/api/health > /dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  # =========================================================================
+  #  OpenTelemetry Collector  (Phase 2.2) — trace routing hub
+  # -------------------------------------------------------------------------
+  #  Receives OTLP/HTTP from the agent (and any future emitter), batches,
+  #  and forwards to Langfuse v3's OTLP endpoint with Basic auth.
+  #  Centralises the Langfuse credentials so emitters don't see them.
+  #  See otel/README.md and otel/config.yaml for the full story.
+  # =========================================================================
+  otel-collector:
+    # `contrib` distribution because the `basicauth` extension and
+    # `attributes` processor live there, not in core.
+    image: otel/opentelemetry-collector-contrib:0.114.0
+    container_name: otel-collector
+    restart: unless-stopped
+
+    command: ["--config=/etc/otel/config.yaml"]
+
+    environment:
+      # Consumed by the basicauth/langfuse extension. The app itself no
+      # longer needs these; they only live here now.
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY}
+
+    volumes:
+      - ./otel/config.yaml:/etc/otel/config.yaml:ro
+
+    ports:
+      - "4318:4318"    # OTLP/HTTP receiver — apps push here (also reachable from host shell for smoke tests)
+      - "13133:13133"  # health endpoint used by docker-compose's healthcheck (and humans)
+      - "8888:8888"    # the collector's own /metrics
+
+    networks:
+      - llm-stack
+
+    depends_on:
+      # Langfuse needs to be up before the basicauth handshake can succeed
+      # on the very first batch. The collector itself will still start, but
+      # waiting here avoids a wave of `connection refused` log noise.
+      langfuse:
+        condition: service_healthy
+
+    # No healthcheck on this service. The contrib image is distroless
+    # (`gcr.io/distroless/static`) — no shell, no wget, no curl, only the
+    # `/otelcol-contrib` binary. We *could* bundle a healthcheck tool by
+    # building a custom image, but that's heavy ceremony for a sandbox.
+    # Consumers use `condition: service_started` for this service. The
+    # collector startup is fast (~2 s) and if it fails the docker logs
+    # show it immediately; `restart: unless-stopped` plus the SDK's
+    # built-in retry handle the (rare) startup race.
 
   # =========================================================================
   #  DCGM exporter (GPU telemetry → Prometheus)
@@ -595,11 +873,22 @@ services:
       # to vLLM directly — that's the orchestration lesson.
       OPENAI_API_BASE: http://litellm:4000
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
-      # Langfuse v2-compatible SDK reads these directly (public_key, secret_key,
-      # host). We send to Langfuse-native ingestion, not OTLP — see
-      # app/agent.py for why (v2 doesn't speak OTLP/HTTP).
-      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY}
-      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY}
+      # Tracing (Phase 2.2): the app emits OTLP/HTTP to the otel-collector,
+      # which holds the Langfuse credentials and forwards to v3. The app
+      # itself doesn't know about Langfuse anymore.
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      # Pin protocol explicitly so traceloop-sdk picks the HTTP/protobuf
+      # exporter (otherwise some versions default to gRPC, which the
+      # collector also accepts on :4317 internally but it's cleaner to be
+      # explicit about which port the app uses).
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_SERVICE_NAME: llm-sandbox-app
+      # Disable Traceloop's metrics export — our otel/config.yaml only
+      # defines a `traces` pipeline, so the SDK's metrics POSTs return 404
+      # and clutter the app's stderr. Prometheus + the collector's own
+      # /metrics:8888 already give us the observability we want; we don't
+      # need additional app-level OTel metrics on this rig.
+      TRACELOOP_METRICS_ENABLED: "false"
       # Tool backend.
       MOCK_SERVICES_URL: http://mock-services:9000
 
@@ -614,8 +903,11 @@ services:
         condition: service_healthy
       mock-services:
         condition: service_healthy
-      langfuse:
-        condition: service_healthy
+      otel-collector:
+        # Distroless image has no healthcheck — see otel-collector block.
+        # `service_started` is the right gate; the SDK retries if a span
+        # arrives before the collector is ready.
+        condition: service_started
 
     # Streamlit's `/_stcore/health` returns "ok" once the script is loaded.
     healthcheck:

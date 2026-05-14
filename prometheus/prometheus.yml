@@ -89,6 +89,20 @@ scrape_configs:
         labels: { layer: app }
 
   # ---------------------------------------------------------------------
+  #  OpenTelemetry Collector (Phase 2.2 — trace routing hub)
+  # ---------------------------------------------------------------------
+  # The collector emits its own /metrics on :8888. Series we care about:
+  # `otelcol_receiver_accepted_spans`, `otelcol_exporter_sent_spans`,
+  # `otelcol_exporter_send_failed_spans`, `otelcol_exporter_queue_size`,
+  # `otelcol_processor_batch_batch_send_size`. All carry `service_name`
+  # and `exporter` labels so the LLM Overview dashboard can split by
+  # destination (we only have one today, but the labels are there).
+  - job_name: otel-collector
+    static_configs:
+      - targets: ["otel-collector:8888"]
+        labels: { layer: traces }
+
+  # ---------------------------------------------------------------------
   #  Prometheus itself
   # ---------------------------------------------------------------------
   # Scrape ourselves so we can plot scrape_duration_seconds and target
