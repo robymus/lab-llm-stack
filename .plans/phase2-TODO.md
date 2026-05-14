@@ -99,26 +99,28 @@
 > Exit: every Phase-1/Phase-2 container's logs queryable in Grafana via `{service="<name>"}`; the "LiteLLM access log" panel on the overview dashboard populates with parsed JSON fields; a trace ↔ log walkthrough lives in `docs/05-trace-log-correlation.md`.
 
 ### Loki service
-- [ ] Add `loki` service (`grafana/loki:3.3.0`): mount `./loki/loki.yaml:/etc/loki/loki.yaml:ro`, named volume `loki-data:/loki`, expose `3100:3100`, `wget /ready` healthcheck
-- [ ] Write `loki/loki.yaml`: single-binary config (no separate ingester/distributor/querier — sandbox-appropriate per plan), filesystem storage, reasonable retention (e.g. 7d to mirror Prometheus)
-- [ ] Write `loki/README.md`: what Loki is, why single-binary is enough for the sandbox, retention knob, smoke test (`curl :3100/ready`), troubleshooting matrix (ring failures, schema migration, etc.)
+- [x] Add `loki` service (`grafana/loki:3.3.0`): mount `./loki/loki.yaml:/etc/loki/loki.yaml:ro`, named volume `loki-data:/loki`, expose `3100:3100`, `wget /ready` healthcheck (start_period 30s — Loki's ingester gates ready by a 15 s warmup window)
+- [x] Write `loki/loki.yaml`: single-binary config with `auth_enabled: false`, schema v13 + TSDB on filesystem, compactor with retention_period 168h (7d), embedded query cache. **Gotcha encountered**: `max_query_timeout` was renamed to `query_timeout` somewhere between Loki 2.x and 3.x — first bring-up failed with "field max_query_timeout not found"; fixed
+- [x] Write `loki/README.md`: what Loki is, why single-binary is enough for the sandbox, retention via compactor, schema-stability rule, smoke tests against `/loki/api/v1/*`, troubleshooting matrix
 
 ### Promtail service + config
-- [ ] Add `promtail` service (`grafana/promtail:3.3.0`): mount `/var/run/docker.sock:/var/run/docker.sock:ro`, `/var/lib/docker/containers:/var/lib/docker/containers:ro`, `./promtail/promtail.yaml:/etc/promtail/promtail.yaml:ro`, `depends_on: loki healthy`, no host port
-- [ ] Write `promtail/promtail.yaml`: docker_sd_configs against the host socket; relabel `__meta_docker_container_label_com_docker_compose_service` → `service`, `..._project` → `project`, `__meta_docker_container_name` → `container`; `cri: {}` pipeline stage to parse Docker's CRI format
-- [ ] Write `promtail/README.md` (or merge into `loki/README.md`): label scheme, why we use Promtail not Alloy (plan trade-off — Promtail enters maintenance mode in 2026, revisit later), how to add a custom pipeline stage for a particular service
+- [x] Add `promtail` service (`grafana/promtail:3.3.0`): mount `/var/run/docker.sock:/var/run/docker.sock:ro`, `/var/lib/docker/containers:/var/lib/docker/containers:ro`, `./promtail/promtail.yaml:/etc/promtail/promtail.yaml:ro`, `depends_on: loki healthy`, no host port
+- [x] Write `promtail/promtail.yaml`: `docker_sd_configs` against the host socket; relabel `com.docker.compose.service` → `service`, `..._project` → `project`, container name → `container` (stripping the leading `/`); **`docker: {}` pipeline stage** (not `cri:` as the plan said — the plan was wrong: docker's `json-file` log driver wraps lines, not CRI's text format). Drop containers without a compose service label
+- [x] Write `promtail/README.md`: label scheme, why Promtail and not Alloy (Promtail enters maintenance in 2026; revisit then), how to add a per-service parser with a worked LiteLLM access-log example, smoke tests
 
 ### Grafana wiring
-- [ ] Add Loki datasource block to `grafana/provisioning/datasources/datasources.yml`: `uid: loki`, `url: http://loki:3100`, `editable: false`, `maxLines: 5000`
-- [ ] Add a "LiteLLM access log (last 10 min)" logs panel to `grafana/dashboards/01-llm-overview.json` using `{service="litellm"} | json | line_format "..."` — keep formatting minimal, no over-design
+- [x] Add Loki datasource block to `grafana/provisioning/datasources/datasources.yml`: `uid: loki`, `url: http://loki:3100`, `editable: false`, `maxLines: 5000`. Grafana restart after adds picks it up via the file provisioner
+- [x] Add "LiteLLM access log (filtered)" full-width logs panel (id=11, y=40, w=24, h=10) to `grafana/dashboards/01-llm-overview.json` querying `{service="litellm"} != "/health/liveliness" != "/metrics/"` — health/scrape lines are hidden so the panel shows actual chat traffic
+- [x] Wire Grafana `depends_on: loki: healthy` so the datasource doesn't start red
 
 ### Cross-pillar walkthrough doc
-- [ ] Write `docs/05-trace-log-correlation.md`: open a trace in Langfuse v3 → copy wall-clock window → switch to the LLM Overview dashboard with that time range → spot the matching access-log line by user_id. This is the headline demo of the phase — make sure the screenshots / commands are unambiguous
+- [x] Write `docs/05-trace-log-correlation.md`: pick a trace → copy its wall-clock window → switch to the LLM Overview dashboard → spot the matching `POST /chat/completions` lines on the new log panel. Includes a useful-queries cheat-sheet for the other services
+- [x] Update `docs/README.md` index with the new doc
 
 ### Pins + validation
-- [ ] Update `VERSIONS.md`: add `loki` and `promtail` pins
-- [ ] `docker compose up -d`; in Grafana's Explore, run `{service="litellm"}` and confirm log lines stream during traffic
-- [ ] Repeat for `{service="vllm-engine"}`, `{service="app"}` — confirm labels are populated by docker-SD as expected
+- [x] Update `VERSIONS.md`: add `loki` and `promtail` pins (both 3.3.0, last-verified 2026-05-14)
+- [x] `docker compose up -d loki promtail` — both healthy. `curl :3100/loki/api/v1/label/service/values` lists all 18 compose services (every container's stdout is being shipped)
+- [x] Drive an agent call; verify the two `POST /chat/completions` lines for that turn appear via the Loki API and on the new Grafana panel
 
 ---
 

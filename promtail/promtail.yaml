@@ -1,0 +1,72 @@
+# =============================================================================
+#  Promtail config (Phase 2.3)
+# -----------------------------------------------------------------------------
+#  Discovers Docker containers via the host's /var/run/docker.sock and ships
+#  each container's stdout/stderr to Loki, labelled by the compose service
+#  name. Result: in Grafana, `{service="litellm"}` gives you the LiteLLM
+#  access log; `{service="vllm-engine"}` gives you vLLM's startup banner
+#  and request logs; etc.
+#
+#  Why docker_sd_configs (not file globs): containers come and go, log paths
+#  rotate, and the json-log file inside /var/lib/docker/containers/<id>/
+#  is keyed by container id (not name). Docker's service discovery API
+#  gives us labels (compose service, project, container name) AND the path
+#  to the right log file, in one place.
+# =============================================================================
+
+server:
+  http_listen_port: 9080        # /metrics + /ready; internal only (no host port)
+  grpc_listen_port: 0           # unused; -1 picks a random port — set to 0 to disable
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+# Where Promtail remembers how far it's tailed each log file. Without
+# this, a restart re-ships everything from scratch and we get duplicates.
+positions:
+  filename: /tmp/positions.yaml
+
+scrape_configs:
+  - job_name: docker
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+        # Pick up every container in this docker engine. We could filter
+        # by `com.docker.compose.project=llm-stack` but the host shouldn't
+        # have anything else running anyway in a sandbox.
+
+    relabel_configs:
+      # `service` — the compose service name (litellm, vllm-engine, app, …).
+      # The dashboard's `{service="litellm"}` filter relies on this.
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
+        target_label: 'service'
+
+      # `project` — useful if multiple compose projects ever run side by
+      # side; harmless when only `llm-stack` exists. Lets you scope a
+      # query to one project: `{project="llm-stack",service="litellm"}`.
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_project']
+        target_label: 'project'
+
+      # `container` — the full docker container name. Disambiguates if
+      # one compose service has multiple replicas (we don't, but cheap to
+      # set). Strip the leading `/` Docker prepends.
+      - source_labels: ['__meta_docker_container_name']
+        regex: '/(.*)'
+        target_label: 'container'
+
+      # Drop containers that don't have a compose service label — that
+      # means they're not from a compose project (one-off `docker run`s,
+      # the docker proxy, etc.). Without this filter Promtail still
+      # scrapes them but with `service=""` which is noise in queries.
+      - source_labels: ['__meta_docker_container_label_com_docker_compose_service']
+        action: keep
+        regex: '.+'
+
+    pipeline_stages:
+      # Parse the wrapper Docker writes around each log line. Docker's
+      # `json-file` log driver stores each line as:
+      #   {"log":"actual content\n","stream":"stdout","time":"...Z"}
+      # The `docker` stage unwraps that, leaves just the inner `log`
+      # value as the line content, and extracts the `time` as the
+      # entry timestamp.
+      - docker: {}

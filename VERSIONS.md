@@ -20,6 +20,8 @@ and when it was last verified working.
 | langfuse-redis | `redis` | `7-alpine` | 2026-05-14 — Phase 2.1; queue between web + worker |
 | langfuse-minio | `minio/minio` | `RELEASE.2024-11-07T00-52-20Z` | 2026-05-14 — Phase 2.1; S3-compatible event-batch staging |
 | otel-collector | `otel/opentelemetry-collector-contrib` | `0.114.0` | 2026-05-14 — Phase 2.2; contrib distro for basicauth + attributes processors. Distroless image — no shell/wget, hence no compose healthcheck |
+| loki | `grafana/loki` | `3.3.0` | 2026-05-14 — Phase 2.3; single-binary, filesystem-backed, schema v13 + TSDB |
+| promtail | `grafana/promtail` | `3.3.0` | 2026-05-14 — Phase 2.3; docker-SD scrapes every compose container's stdout |
 | dcgm-exporter | `nvcr.io/nvidia/k8s/dcgm-exporter` | `3.3.9-3.6.1-ubuntu22.04` | 2026-05-12 — works with driver 580.x on Ada |
 | node-exporter | `prom/node-exporter` | `v1.8.2` | 2026-05-12 |
 | cadvisor | `gcr.io/cadvisor/cadvisor` | `v0.49.2` | 2026-05-12 — `accelerator` metric class already removed in this release |

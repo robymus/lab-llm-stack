@@ -1,0 +1,97 @@
+# =============================================================================
+#  Loki config (Phase 2.3) — single-binary, filesystem-backed
+# -----------------------------------------------------------------------------
+#  Sandbox-appropriate deployment: one container, one disk, one tenant. The
+#  production-grade split (distributor / ingester / querier / compactor on
+#  separate processes) is overkill for the log volumes here and unnecessary
+#  ceremony for the lesson Phase 2.3 teaches (logs join metrics + traces as
+#  the third observability pillar).
+#
+#  Retention is set to 7 days to mirror Prometheus's TSDB retention so a
+#  trace, its metrics, and its logs all age out together — keeps the "find
+#  the matching log line for this trace" workflow honest.
+#
+#  Schema is `v13` + TSDB index. v13 is the first schema to support
+#  structured metadata (key-value pairs attached to a log line); we don't
+#  use it yet but picking it now means no migration when we want to.
+# =============================================================================
+
+auth_enabled: false             # single-tenant sandbox; no X-Scope-OrgID needed
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096        # internal only — no host port; required by ingester/distributor handshake even in single-binary mode
+
+# `common` is the single-binary shorthand that fills in sensible defaults
+# for the per-component sections we'd otherwise have to write out (ring
+# settings, replication factor, instance addr, etc.).
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki            # named volume mount-point; matches docker-compose.yaml
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory           # no consul/etcd — single binary, no peers
+
+# Schema v13 + TSDB. Don't bump these dates after first start — once data
+# has been written under a schema, the prefix gets baked in and changing
+# the schema requires a migration. The `from` date below is far enough in
+# the past that any first start picks it up.
+schema_config:
+  configs:
+    - from: "2024-01-01"
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h             # one index file per day; balances size vs. compaction cost
+
+storage_config:
+  tsdb_shipper:
+    active_index_directory: /loki/index
+    cache_location: /loki/index_cache
+  filesystem:
+    directory: /loki/chunks
+
+# Compactor is what actually enforces retention. Without it, logs accumulate
+# forever even if you set `retention_period`. `delete_request_store` is
+# required when retention is on so per-line deletions can stage on disk.
+compactor:
+  working_directory: /loki/compactor
+  delete_request_store: filesystem
+  retention_enabled: true
+  compaction_interval: 10m
+  retention_delete_delay: 2h    # buffer before a delete actually removes chunks
+  retention_delete_worker_count: 50
+
+limits_config:
+  retention_period: 168h        # 7 days, same as prometheus/prometheus.yml --storage.tsdb.retention.time
+  # Defaults are conservative for a busy multi-tenant setup; for the
+  # sandbox we can afford to relax them a bit.
+  ingestion_rate_mb: 16
+  ingestion_burst_size_mb: 24
+  max_entries_limit_per_query: 5000
+  # `query_timeout` (renamed from `max_query_timeout` somewhere between
+  # Loki 2.x and 3.x) caps how long a single query can run. 5 min is
+  # forgiving; the dashboard panels finish in milliseconds.
+  query_timeout: 5m
+
+# Lightweight in-memory query result cache. 100 MB is plenty for the
+# handful of repeated queries dashboards run.
+query_range:
+  results_cache:
+    cache:
+      embedded_cache:
+        enabled: true
+        max_size_mb: 100
+
+# Ruler points nowhere — we don't ship Loki alerts in this sandbox
+# (Alertmanager is on the explicit "out of scope" list, per phase2-PLAN §1).
+# Set to a placeholder so the binary boots cleanly.
+ruler:
+  alertmanager_url: http://localhost:9093

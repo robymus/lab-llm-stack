@@ -8,6 +8,7 @@ Read in order. Each one builds on the previous.
 | 02 | [Anatomy of a request](02-anatomy-of-a-request.md) | Follow one multi-tool prompt through every layer — UI, agent, gateway, vLLM, tool, mock-services, back — with the corresponding trace tree and metric signature. |
 | 03 | [Saturation analysis](03-saturation-analysis.md) | Drive real load with [`scripts/load.sh`](../scripts/load.sh) and its seven profiles (smoke, short, decode-heavy, prefill-heavy, prefix-cache, mixed, saturation). What each profile is for and which dashboard panel it lights up. |
 | 04 | [Trace ↔ metric correlation](04-trace-metric-correlation.md) | Pick one Langfuse trace, find its wall-clock window on the GPU power panel, see the prefill/decode burstiness pattern with your own eyes. The lesson the sandbox was built for. |
+| 05 | [Trace ↔ log correlation](05-trace-log-correlation.md) | Phase 2.3 — three pillars in one tab-switching dance. Same trace, same window, now with the LiteLLM access-log lines and a tour of `{service="…"}` queries for every other container. |
 
 ## Quick links
 

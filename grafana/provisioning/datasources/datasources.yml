@@ -19,3 +19,20 @@ datasources:
     jsonData:
       timeInterval: 5s      # match prometheus.yml's scrape_interval so $__rate_interval is sensible
       httpMethod: POST      # POST tolerates much larger queries than GET
+
+  # ---------------------------------------------------------------------
+  #  Loki (Phase 2.3 — third observability pillar)
+  # ---------------------------------------------------------------------
+  #  Same proxy pattern as Prometheus. `uid: loki` is what dashboards
+  #  reference so the datasource resolution doesn't depend on a generated id.
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    editable: false
+    jsonData:
+      # Cap how many lines a single query can return. Most panels ask for
+      # ~100-500; the limit guards against accidental `{} | unwrap` queries
+      # that try to pull every line in the retention window.
+      maxLines: 5000

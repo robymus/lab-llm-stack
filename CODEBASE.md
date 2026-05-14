@@ -7,19 +7,19 @@
 
 ## Current state
 
-**Phases 1.0 + 1.1 + 1.2 + 1.3 + 1.4 + 2.0 + 2.1 + 2.2 implemented.**
-Sixteen services healthy under `docker compose up -d` (after running
-`scripts/pull-phase2-images.sh` once). The trace path now is:
-**Streamlit → agent → traceloop-sdk (OTLP/HTTP) → otel-collector →
-Langfuse v3**. The agent no longer holds Langfuse credentials — the
-`otel-collector` container does, via the `basicauth/langfuse` extension.
-Traces in Langfuse v3 now show the full chain → llm → tool → **httpx**
-sub-spans Phase 1.2 had to drop (v2 didn't speak OTLP), with the
-top-level `userId` field populated via the collector's
-`traceloop.association.properties.user_id → langfuse.user.id`
-attribute remapping. The LLM Overview dashboard gains two new panels
-(span throughput in vs. out; export failures + queue size) wired to
-the collector's own `/metrics`.
+**Phases 1.0 + 1.1 + 1.2 + 1.3 + 1.4 + 2.0 + 2.1 + 2.2 + 2.3 implemented.**
+Eighteen services healthy under `docker compose up -d` (after running
+`scripts/pull-phase2-images.sh` once). Phase 2.2 routed the trace path
+through an `otel-collector`. Phase 2.3 added the **third observability
+pillar**: `loki` (single-binary, filesystem-backed, schema v13 + TSDB)
+and `promtail` (docker-SD scraper) ship every compose container's
+stdout into Loki, labelled by `service` / `project` / `container`. A
+Loki datasource is provisioned alongside Prometheus, and a new
+"LiteLLM access log (filtered)" logs panel lives at the bottom of the
+LLM Overview dashboard. The `docs/05-trace-log-correlation.md`
+walkthrough completes the cross-pillar story: open a trace in
+Langfuse, copy its wall-clock window into Grafana, see the matching
+`POST /chat/completions` log line for that exact request.
 
 Deviations from the plan along the way (documented inline + in PLAN/TODO):
 - Langfuse v2 doesn't speak OTLP → Langfuse-native LangChain callback
@@ -69,6 +69,12 @@ Deviations from the plan along the way (documented inline + in PLAN/TODO):
 | ------ | --------------------- | --------- |
 | [otel/](otel/) | **Phase 2.2** — collector service in compose, config + README. Routes OTLP/HTTP from the agent to Langfuse v3 with basicauth + batching + attribute remapping. | [otel/config.yaml](otel/config.yaml), [otel/README.md](otel/README.md) |
 
+### Services (live in 2.3)
+| Folder | Implementation status | Key files |
+| ------ | --------------------- | --------- |
+| [loki/](loki/) | **Phase 2.3** — single-binary log aggregator. Schema v13 + TSDB index, filesystem chunks on the `loki-data` volume, 7-day retention enforced by the compactor. | [loki/loki.yaml](loki/loki.yaml), [loki/README.md](loki/README.md) |
+| [promtail/](promtail/) | **Phase 2.3** — docker-SD log scraper. Tails every compose container's stdout/stderr, labels by `service` / `project` / `container`, unwraps Docker's `json-file` log driver via the `docker:` pipeline stage. | [promtail/promtail.yaml](promtail/promtail.yaml), [promtail/README.md](promtail/README.md) |
+
 ### Services (live in 1.0)
 | Folder | Implementation status | Key files |
 | ------ | --------------------- | --------- |
@@ -90,7 +96,7 @@ Deviations from the plan along the way (documented inline + in PLAN/TODO):
 | [mock-services/](mock-services/) | FastAPI app with 5 endpoints + `/metrics` + Prometheus scrape job + README + tests (1.4) | [mock-services/main.py](mock-services/main.py), [mock-services/Dockerfile](mock-services/Dockerfile), [mock-services/README.md](mock-services/README.md), [mock-services/tests/test_endpoints.py](mock-services/tests/test_endpoints.py), [mock-services/requirements-dev.txt](mock-services/requirements-dev.txt) |
 | [app/](app/) | Streamlit + LangChain agent + 5 tools + tracing via **traceloop-sdk → OTLP** (Phase 2.2) + README + tests (1.4). Phase 1.2 used `langfuse.CallbackHandler`; Phase 2.2 swapped it for `Traceloop.init(...)` + `HTTPXClientInstrumentor` + `Traceloop.set_association_properties({"user_id": ...})`. | [app/app.py](app/app.py), [app/agent.py](app/agent.py), [app/tools.py](app/tools.py), [app/Dockerfile](app/Dockerfile), [app/README.md](app/README.md), [app/tests/test_tools.py](app/tests/test_tools.py), [app/requirements-dev.txt](app/requirements-dev.txt) |
 
-### Walkthrough docs (live in 1.3)
+### Walkthrough docs (live in 1.3, extended in 2.3)
 | File | What it covers |
 | ---- | -------------- |
 | [docs/README.md](docs/README.md) | Index — read these in order |
@@ -98,6 +104,7 @@ Deviations from the plan along the way (documented inline + in PLAN/TODO):
 | [docs/02-anatomy-of-a-request.md](docs/02-anatomy-of-a-request.md) | One multi-tool prompt traced through every layer with the resulting spans + metrics |
 | [docs/03-saturation-analysis.md](docs/03-saturation-analysis.md) | All 7 `scripts/load.sh` profiles explained, what to watch on which dashboard, how to read a trunks report |
 | [docs/04-trace-metric-correlation.md](docs/04-trace-metric-correlation.md) | The headline lesson — pick one trace, find its GPU power signature, see prefill vs decode burstiness |
+| [docs/05-trace-log-correlation.md](docs/05-trace-log-correlation.md) | **Phase 2.3** — same trace, same wall-clock window, now overlaid on the LiteLLM access log panel + a tour of `{service="…"}` queries for every container |
 
 ### CI (live in 1.4)
 | File | What it is |
@@ -185,6 +192,8 @@ data, Prometheus TSDB, Grafana SQLite) lives in named volumes.
 - LLM Overview dashboard: <http://localhost:3000/d/llm-overview/llm-overview>
 - GPU Saturation dashboard: <http://localhost:3000/d/gpu-saturation/gpu-saturation>
 - Prometheus targets: <http://localhost:9090/targets>
+- Loki API + readiness: <http://localhost:3100/ready>
+- Grafana Explore (Loki): <http://localhost:3000/explore?left=%7B%22datasource%22%3A%22loki%22%7D>
 
 ## Env vars in use
 

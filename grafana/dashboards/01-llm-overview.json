@@ -608,6 +608,42 @@
           "mode": "multi"
         }
       }
+    },
+    {
+      "id": 11,
+      "type": "logs",
+      "title": "LiteLLM access log (filtered)",
+      "description": "Live tail of the LiteLLM gateway's stdout, scraped by Promtail and queried out of Loki. Healthcheck probes (`/health/liveliness`) and Prometheus scrapes (`/metrics/`) are filtered out so the panel shows actual chat-completion traffic. This is the panel the trace ↔ log walkthrough uses — open a trace's wall-clock window in the time picker, scan for the matching `POST /chat/completions` line.",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 40,
+        "w": 24,
+        "h": 10
+      },
+      "targets": [
+        {
+          "expr": "{service=\"litellm\"} != \"/health/liveliness\" != \"/metrics/\"",
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          }
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "showCommonLabels": false,
+        "wrapLogMessage": true,
+        "prettifyLogMessage": false,
+        "enableLogDetails": true,
+        "dedupStrategy": "none",
+        "sortOrder": "Descending"
+      }
     }
   ],
   "refresh": "5s",

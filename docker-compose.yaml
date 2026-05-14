@@ -104,6 +104,8 @@ volumes:
   prometheus-data:           # Prometheus TSDB (added in Phase 1.1; declared
                              # now so the file stays stable as we expand).
   grafana-data:              # Grafana sqlite + plugin cache (Phase 1.1).
+  loki-data:                 # Phase 2.3: Loki chunks + TSDB index + compactor
+                             # state. ~50 MB/day under sandbox load.
 
 # ---------------------------------------------------------------------------
 #  Services
@@ -772,6 +774,81 @@ services:
       start_period: 10s
 
   # =========================================================================
+  #  Loki (log aggregation — Phase 2.3, third observability pillar)
+  # -------------------------------------------------------------------------
+  #  Single-binary deployment, filesystem-backed. Receives lines from
+  #  promtail, indexes by label, stores chunks on the `loki-data` volume.
+  #  See loki/README.md for the per-knob walkthrough.
+  # =========================================================================
+  loki:
+    image: grafana/loki:3.3.0
+    container_name: loki
+    restart: unless-stopped
+
+    command: ["-config.file=/etc/loki/loki.yaml"]
+
+    volumes:
+      - ./loki/loki.yaml:/etc/loki/loki.yaml:ro
+      - loki-data:/loki
+
+    ports:
+      - "3100:3100"                        # host shell can curl /loki/api/v1/* directly
+
+    networks:
+      - llm-stack
+
+    healthcheck:
+      # Loki's alpine-derived image ships BusyBox wget. /ready returns 200
+      # only after the ingester has finished its 15 s warm-up window — so
+      # start_period needs to clear that.
+      test: ["CMD", "wget", "-qO-", "http://localhost:3100/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # =========================================================================
+  #  Promtail (log scraper — Phase 2.3)
+  # -------------------------------------------------------------------------
+  #  Discovers compose-managed containers via the host docker socket,
+  #  tails each one's stdout/stderr file, ships to Loki labelled by
+  #  compose service name. See promtail/README.md.
+  # =========================================================================
+  promtail:
+    image: grafana/promtail:3.3.0
+    container_name: promtail
+    restart: unless-stopped
+
+    command: ["-config.file=/etc/promtail/promtail.yaml"]
+
+    volumes:
+      # The docker socket — used for service discovery (lists containers,
+      # reads their labels). Read-only is enough for promtail's needs.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Where docker writes the json-file logs per container. Promtail
+      # tails the file pointed to by SD; the docker pipeline stage parses
+      # the json wrapper.
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - ./promtail/promtail.yaml:/etc/promtail/promtail.yaml:ro
+
+    networks:
+      - llm-stack
+
+    depends_on:
+      loki:
+        condition: service_healthy
+
+    # No published port — /ready and /metrics on :9080 are reachable
+    # inside the network only (or via `docker compose exec promtail`).
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9080/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # =========================================================================
   #  Grafana (dashboards over Prometheus data)
   # -------------------------------------------------------------------------
   #  Datasource and dashboards come from `provisioning/` — no manual UI
@@ -815,6 +892,10 @@ services:
 
     depends_on:
       prometheus:
+        condition: service_healthy
+      loki:
+        # Phase 2.3: Grafana's Loki datasource pings on startup; if Loki
+        # isn't healthy yet the datasource shows red until next refresh.
         condition: service_healthy
 
     healthcheck:
